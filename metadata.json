@@ -1,0 +1,8 @@
+{
+  "name": "Agnes Video Generator",
+  "description": "Generate high-quality cinematic videos using Agnes AI with a built-in AI Experience Library for continuous learning and error tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

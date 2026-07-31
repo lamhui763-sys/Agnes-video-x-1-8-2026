@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Projects: For now allowing all, but should ideally check ownership
+    match /projects/{projectId} {
+      allow read, write: if true;
+    }
+    
+    // Users: Basic user profiles
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    // Experience Library: Records of failed attempts and AI improvements
+    match /experience_library/{entryId} {
+      // Allow read for anyone (to learn from past mistakes)
+      allow read: if true;
+      // Allow write if authenticated (system or user)
+      allow create: if true; // In sandbox, we allow creation for logging
+      allow update, delete: if false; // Prevent modification of historical logs
+    }
+  }
+}
