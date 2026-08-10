@@ -262,22 +262,36 @@ export const SequentialChainMode: React.FC<SequentialChainModeProps> = ({
     } catch (e) {}
   }, [project.id]);
 
+  /** Hard identity lock — same face/outfit every shot (user mandate) */
   const getCharDesc = (charName: string, scenePrompt: string = ''): string => {
     const resolved = resolveSceneCharacters(charName, scenePrompt, characters);
-    if (resolved.charDesc) return resolved.charDesc;
+    if (resolved.charDesc) {
+      return `SAME PERSON every shot. ${resolved.charDesc}. identical face, hair, skin, clothing; no face swap, no gender change, no outfit change`;
+    }
     const c = characters.find(
       (x) => (x.name || '').trim() === (charName || '').trim()
+        || (x.name || '').trim().toLowerCase() === (charName || '').trim().toLowerCase()
     );
-    if (!c) return '';
+    if (!c) return charName ? `character ${charName}, keep same face and outfit every shot` : '';
     const gender =
       c.gender === 'male'
         ? 'male, clearly masculine face and body, man'
         : c.gender === 'female'
           ? 'female, clearly feminine face and body, woman'
           : '';
-    return [gender, c.description, c.clothing, c.age ? `age ${c.age}` : '']
-      .filter(Boolean)
-      .join(', ');
+    return [
+      `SAME PERSON every shot: ${c.name}`,
+      gender,
+      c.description,
+      c.clothing ? `ALWAYS wear: ${c.clothing}` : '',
+      c.age ? `age ${c.age}` : '',
+      'identical face/hair/outfit; no face swap, no gender change',
+    ].filter(Boolean).join(', ');
+  };
+
+  const getCharRefImages = (charName: string, scenePrompt: string = ''): string[] => {
+    const resolved = resolveSceneCharacters(charName, scenePrompt, characters);
+    return (resolved.characterImages || []).slice(0, 4);
   };
 
   const setScenes = (next: Scene[]) => {
@@ -595,14 +609,24 @@ export const SequentialChainMode: React.FC<SequentialChainModeProps> = ({
     }
 
     const activeStyleText = chainArtStyle || artStyle || project.artStyle || STYLE_PRESETS[0].prompt;
-    const charDesc = getCharDesc(scene.character);
-    let prompt = scene.actionPrompt || scene.visualPrompt || scene.title || 'cinematic motion';
+    const charDesc = getCharDesc(scene.character, scene.visualPrompt);
+    const refImages = getCharRefImages(scene.character, scene.visualPrompt);
+    if (refImages.length === 0 && scene.character) {
+      addLog(`鏡頭 ${index + 1}：⚠️ 角色「${scene.character}」無三視角/參考圖，臉可能飄 — 請先在角色頁生成一致性設計圖`, 'warn');
+    } else if (refImages.length > 0) {
+      addLog(`鏡頭 ${index + 1}：人物鎖定（${refImages.length} 張參考圖）`, 'info');
+    }
+    const identityLock = charDesc
+      ? `[CHARACTER IDENTITY LOCK]: ${charDesc}. Keep EXACT same face, hair, body, outfit for whole clip. `
+      : '';
+    let prompt = identityLock + (scene.actionPrompt || scene.visualPrompt || scene.title || 'cinematic motion');
     if (opts.advice) {
       prompt = `${prompt}. Continuity from previous shot: ${opts.advice}`;
     }
     if (!prompt.toLowerCase().includes(activeStyleText.toLowerCase())) {
       prompt = `[UNIFIED STYLE: ${activeStyleText}]. ${prompt}`;
     }
+    prompt += '. No face morphing, no outfit change mid-clip, consistent character identity.';
 
     const prevSceneObj = index > 0 ? list[index - 1] : null;
     const isHardCutNeeded = prevSceneObj ? shouldUseHardCut(prevSceneObj.character, scene.character) : false;
@@ -614,21 +638,25 @@ export const SequentialChainMode: React.FC<SequentialChainModeProps> = ({
 
     const body: any = {
       prompt,
-      visualPrompt: scene.visualPrompt ? `[UNIFIED STYLE: ${activeStyleText}]. ${scene.visualPrompt}` : `[UNIFIED STYLE: ${activeStyleText}]`,
+      visualPrompt: scene.visualPrompt
+        ? `[UNIFIED STYLE: ${activeStyleText}]. ${identityLock}${scene.visualPrompt}`
+        : `[UNIFIED STYLE: ${activeStyleText}]. ${identityLock}`,
       actionPrompt: scene.actionPrompt,
       transitionPrompt: scene.transitionPrompt,
       dialogue: scene.dialogue,
       narration: scene.narration,
-      directorNotes: scene.directorNotes,
+      directorNotes: `${scene.directorNotes || ''} [MUST keep same character face and clothing as start frame and character bible]`,
       character: scene.character,
       characterDescription: charDesc,
+      characterImages: refImages,
       artStyle: activeStyleText,
-      imageUrl: effectiveImageUrl, // 使用上一鏡頭尾幀作為本鏡頭首幀（同人物時）
+      imageUrl: effectiveImageUrl, // 同人物時用上一鏡尾幀鎖臉
       isHardCut: isHardCutNeeded,
       durationSeconds: scene.durationSeconds || 8,
       agnesVideoMode: project.agnesVideoMode || 'quality',
       sceneIndex: index,
       sceneType: 'chain',
+      requireCharacterConsistency: true,
     };
 
     try {

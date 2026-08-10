@@ -5303,9 +5303,12 @@ app.post("/api/generate-image", async (req, res) => {
       charDesc = "[PURE SCENERY / NO CHARACTER / ZERO PEOPLE MANDATE]: Pure environmental, background scenery or architecture shot. ABSOLUTELY NO humans, NO characters, NO people, NO students, NO faces, NO male or female figures present in this scene. Completely empty environment, zero people.";
       imageParts = []; // Do not send character avatar references for no-character scenes
     } else {
-      charDesc = characterDescription ? `The main character is ${character || "the character"}, described as: ${characterDescription}.` : `The main character is ${character || "the character"}.`;
+      charDesc = characterDescription
+        ? `The ONLY main character is "${character || "the character"}", IDENTITY LOCKED as: ${characterDescription}.`
+        : `The main character is "${character || "the character"}".`;
+      charDesc += ` [CHARACTER IDENTITY LOCK — MANDATORY]: Same person every shot. Face, eyes, hairstyle, hair color, skin tone, body type MUST match exactly. Do NOT invent a new face, do NOT change gender, do NOT change outfit.`;
       if (imageParts.length > 0) {
-        charDesc += ` Crucial: You MUST use the attached reference image(s) as a direct visual guide to maintain absolute character consistency (such as facial features, hairstyle, face shape, skin tone, clothing details, and general appearance) for ${character || "the character"} in this scene.`;
+        charDesc += ` Crucial: match attached reference image(s) for absolute face/hair/clothing consistency for "${character || "the character"}".`;
       }
       const fullOutfitDesc = [characterDescription, characterOutfit].filter(Boolean).join(" | Signature Clothing: ");
       if (fullOutfitDesc) {
@@ -5319,7 +5322,7 @@ app.post("/api/generate-image", async (req, res) => {
       }
     }
 
-    enhancedPrompt = `A ${baseSceneType}. ${charDesc}${clothingConsistencyDirective}${moodAddon} Scene setting & action: ${finalPrompt}. Style: ${styleAddon}. This must be a SINGLE integrated scene image with professional cinematic framing and layout (NOT a multi-angle reference sheet, NOT a collage, NOT a character sheet). Beautiful lighting, highly detailed background. Absolutely NO text, labels, signatures, titles, subtitles, captions, watermarks, UI elements, words, or letters on the image.`;
+    enhancedPrompt = `A ${baseSceneType}. ${charDesc}${clothingConsistencyDirective}${moodAddon} Scene setting & action: ${finalPrompt}. Style: ${styleAddon}. This must be a SINGLE integrated scene image with professional cinematic framing and layout (NOT a multi-angle reference sheet, NOT a collage, NOT a character sheet). Keep character face and clothing identical to the identity bible. Beautiful lighting, highly detailed background. Absolutely NO text, labels, signatures, titles, subtitles, captions, watermarks, UI elements, words, or letters on the image.`;
   }
 
   const isNoCharParam = isNoCharServerHelper(character, characterDescription, finalPrompt || prompt);
@@ -5330,6 +5333,9 @@ app.post("/api/generate-image", async (req, res) => {
 
   if (isNoCharParam) {
     baseNegativePrompt = `person, human, female, male, girl, boy, student, students, female student, male student, schoolgirl, schoolboy, teenager, children, character, people, woman, man, face, crowd, figure, silhouette, anime girl, anime boy, standing person, walking person, body, avatar, pedestrians, passersby, crowd in background, group of students, humanoid, hands, limbs, ${baseNegativePrompt}`;
+  } else {
+    // Always reject identity drift when characters are present
+    baseNegativePrompt = `${baseNegativePrompt}, different face, face swap, identity change, gender swap, different person, random actor, inconsistent character, different hairstyle, different clothing, outfit change`;
   }
 
   const resolvedImageNegativePrompt = enrichNegativePromptWithSceneContext(baseNegativePrompt, (finalPrompt || prompt), isNoCharParam ? "" : characterDescription);

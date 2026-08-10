@@ -60,12 +60,24 @@ export function resolveSceneCharacters(sceneChar: string = "", sceneVisualPrompt
     const outfit = c.clothing ? c.clothing.trim() : "";
     const desc = c.description ? c.description.trim() : "";
     const name = c.name || "Character";
+    const gender =
+      (c as any).gender === "male" || (c as any).gender === "男"
+        ? "male man, masculine face"
+        : (c as any).gender === "female" || (c as any).gender === "女"
+          ? "female woman, feminine face"
+          : "";
+    const age = c.age ? `age about ${c.age}` : "";
 
-    let singleDesc = `${name}: ${desc || "Anime character"}`;
+    // Identity lock block — repeated in every image/video prompt
+    let singleDesc = `SAME PERSON every shot "${name}"`;
+    if (gender) singleDesc += `, ${gender}`;
+    if (age) singleDesc += `, ${age}`;
+    singleDesc += `: ${desc || "Anime character"}`;
     if (outfit) {
-      singleDesc += `. Mandatory Signature Outfit: ${outfit}`;
+      singleDesc += `. ALWAYS wear exact outfit: ${outfit}`;
       outfitParts.push(`${name}: ${outfit}`);
     }
+    singleDesc += `. identical face shape, eyes, hairstyle, hair color, skin tone; do NOT change gender, face, or clothing`;
     descParts.push(singleDesc);
 
     // Collect avatar images
