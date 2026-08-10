@@ -1,4 +1,98 @@
-import { Project } from "../types";
+import { Project, Character } from "../types";
+import { isNoChar } from "./promptBuilder";
+
+export { isNoChar };
+
+export function resolveSceneCharacters(sceneChar: string = "", sceneVisualPrompt: string = "", projectChars: Character[] = []): {
+  matchingChar: Character | undefined;
+  matchedChars: Character[];
+  charDesc: string;
+  charOutfit: string;
+  characterImages: string[];
+} {
+  if (!projectChars || projectChars.length === 0) {
+    return { matchingChar: undefined, matchedChars: [], charDesc: "", charOutfit: "", characterImages: [] };
+  }
+
+  const cleanChar = (sceneChar || "").trim().toLowerCase();
+  const cleanPrompt = (sceneVisualPrompt || "").trim().toLowerCase();
+  const combined = `${cleanChar} ${cleanPrompt}`;
+
+  if (isNoChar(cleanChar)) {
+    return { matchingChar: undefined, matchedChars: [], charDesc: "", charOutfit: "", characterImages: [] };
+  }
+
+  // Find matching characters
+  const matched = projectChars.filter(c => {
+    const name = (c.name || "").trim().toLowerCase();
+    const role = (c.role || "").trim().toLowerCase();
+    
+    if (name && (cleanChar === name || cleanChar.includes(name) || name.includes(cleanChar) || cleanPrompt.includes(name))) return true;
+    if (role && (cleanChar.includes(role) || cleanPrompt.includes(role))) return true;
+
+    // Female / Male heuristic
+    const isFemale = (role.includes("女") || name.includes("女") || (c as any).gender?.includes("女"));
+    const isMale = (role.includes("男") || name.includes("男") || (c as any).gender?.includes("男"));
+
+    const hasFemaleInText = combined.includes("女") || combined.includes("少女") || combined.includes("girl") || combined.includes("female") || combined.includes("woman");
+    const hasMaleInText = combined.includes("男") || combined.includes("少年") || combined.includes("boy") || combined.includes("male") || combined.includes("man");
+
+    if (isFemale && hasFemaleInText) return true;
+    if (isMale && hasMaleInText) return true;
+
+    return false;
+  });
+
+  // Fallback: If no match was found, use all project characters if scene text contains multiple people or default to primary character
+  const finalMatched = matched.length > 0 
+    ? matched 
+    : (combined.includes("&") || combined.includes("與") || combined.includes("和") || combined.includes("對視") || combined.includes("兩人") || combined.includes("雙人")
+        ? projectChars
+        : [projectChars[0]]);
+
+  const primaryChar = finalMatched[0];
+
+  const descParts: string[] = [];
+  const outfitParts: string[] = [];
+  const images: string[] = [];
+
+  finalMatched.forEach(c => {
+    const outfit = c.clothing ? c.clothing.trim() : "";
+    const desc = c.description ? c.description.trim() : "";
+    const name = c.name || "Character";
+
+    let singleDesc = `${name}: ${desc || "Anime character"}`;
+    if (outfit) {
+      singleDesc += `. Mandatory Signature Outfit: ${outfit}`;
+      outfitParts.push(`${name}: ${outfit}`);
+    }
+    descParts.push(singleDesc);
+
+    // Collect avatar images
+    if (c.uploadedAvatarUrls && c.uploadedAvatarUrls.length > 0) {
+      images.push(...c.uploadedAvatarUrls);
+    } else if (c.uploadedAvatarUrl) {
+      images.push(c.uploadedAvatarUrl);
+    } else if (c.avatarUrls && c.avatarUrls.length > 0) {
+      images.push(...c.avatarUrls);
+    } else if (c.avatarUrl) {
+      images.push(c.avatarUrl);
+    }
+  });
+
+  let formattedOutfit = outfitParts.join(" | ");
+  if (formattedOutfit && (formattedOutfit.includes("校服") || formattedOutfit.includes("水手服") || formattedOutfit.includes("制服") || formattedOutfit.includes("uniform"))) {
+    formattedOutfit += " [Note: Characters attending the same school MUST wear matching school uniform styles matching their respective character settings.]";
+  }
+
+  return {
+    matchingChar: primaryChar,
+    matchedChars: finalMatched,
+    charDesc: descParts.join(" | "),
+    charOutfit: formattedOutfit,
+    characterImages: Array.from(new Set(images.filter(Boolean)))
+  };
+}
 
 export function getProjectSignature(project: Project | null): string {
   if (!project) return "";

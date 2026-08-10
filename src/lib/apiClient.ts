@@ -139,9 +139,11 @@ export async function apiFetch(
         lastError = createApiError(err.message || String(err), 'unknown', undefined, false);
       }
 
-      // Retry only on network / timeout / 5xx
+      // Retry only on network / timeout / 5xx / 429
       if (attempt < retries && (lastError as ApiError).isRetryable) {
-        console.warn(`[apiFetch] ${label} attempt ${attempt + 1} failed, retrying in ${retryDelayMs}ms...`, lastError.message);
+        const is429 = (lastError as ApiError).status === 429;
+        const delay = is429 ? Math.max(5000, retryDelayMs * 2 * (attempt + 1)) : retryDelayMs * (attempt + 1);
+        console.warn(`[apiFetch] ${label} attempt ${attempt + 1} failed (${is429 ? '429 Rate Exceeded' : lastError.message}), retrying in ${delay}ms...`);
         
         // If network error, try pinging health endpoint to wake up server / wait for restart
         if (isNetwork) {
@@ -150,7 +152,7 @@ export async function apiFetch(
           } catch {}
         }
 
-        await new Promise(r => setTimeout(r, retryDelayMs * (attempt + 1))); // exponential-ish
+        await new Promise(r => setTimeout(r, delay));
         continue;
       }
 

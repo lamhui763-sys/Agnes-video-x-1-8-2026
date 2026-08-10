@@ -45,6 +45,12 @@ export interface Scene {
   videoApiLatencyKeyframes?: string;
   videoDownloadLatencyKeyframes?: string;
   videoResourceAllocationKeyframes?: string;
+  startFrameKeyframes?: string;
+  endFrameKeyframes?: string;
+  endFrameDescriptionKeyframes?: string;
+  startFrameSourceKeyframes?: string;
+  step3ImageErrorKeyframes?: string;
+  midpointImageUrlKeyframes?: string;
   isRetryingPolicy?: boolean;
   policyRetryCount?: number;
   useFreezeAndMove?: boolean;
@@ -158,6 +164,7 @@ export interface Character {
   name: string;
   description: string;
   role?: string;
+  imageUrl?: string;
   avatarUrl?: string;
   avatarUrls?: string[];
   uploadedAvatarUrl?: string;

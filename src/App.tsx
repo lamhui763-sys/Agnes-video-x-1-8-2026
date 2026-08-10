@@ -1,5 +1,6 @@
 import { ScrubbableVideoPlayer } from "./components/ScrubbableVideoPlayer";
 import { apiFetch } from "./lib/apiClient";
+import { speakDialogue, stopDialogueSpeech } from "./lib/ttsUtils";
 import React, { useState, useEffect, useRef } from "react";
 import { 
   Video,
@@ -70,8 +71,8 @@ import { AITransmissionMonitor } from "./components/AITransmissionMonitor";
 import { auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, db } from "./lib/firebase";
 import { collection, query, where, getDocs } from "firebase/firestore";
 import { logToExperienceLibrary } from "./lib/logger";
-import { getProjectSignature, normalizeProjectsList, copyTextToClipboard as copyTextToClipboardUtil } from "./lib/projectUtils";
-import { shouldUseHardCut, HARD_CUT_INSTRUCTION, buildVideoPrompt, isNoChar } from "./lib/promptBuilder";
+import { getProjectSignature, normalizeProjectsList, copyTextToClipboard as copyTextToClipboardUtil, resolveSceneCharacters } from "./lib/projectUtils";
+import { shouldUseHardCut, HARD_CUT_INSTRUCTION, buildVideoPrompt, isNoChar, NO_CHARACTER_NEGATIVE_PROMPT, NO_CHARACTER_MANDATE_PROMPT, buildNegativePrompt, generateSceneNegativePrompt } from "./lib/promptBuilder";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { PrintModal } from "./components/PrintModal";
 import ProfileModal from "./components/ProfileModal";
@@ -199,10 +200,10 @@ export default function App() {
       localStorage.removeItem("toonflow_active_project_id");
     }
   }, [activeProjectId]);
-  const [activeTab, setActiveTab] = useState<"novel" | "characters" | "scenes" | "scenes_ext" | "gallery" | "experience">("scenes");
+  const [activeTab, setActiveTab] = useState<"novel" | "characters" | "scenes" | "scenes_ext" | "scenes_keyframes" | "auto_director" | "gallery" | "experience">("scenes");
   
   // Settings & Custom API Keys
-  const [customApiKey, setCustomApiKey] = useState<string>("cpk-oTHuYiCUe46ZJGyd6xcAmNKiP3DjxcUeiIuqEF9saqLZrq8J");
+  const [customApiKey, setCustomApiKey] = useState<string>("sk-ppQhm2lcU0P1n1zfnFVCeDLpfhQ27aRn28Nqw6m5acsefLQf");
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState<boolean>(false);
   
@@ -262,17 +263,28 @@ export default function App() {
     try {
       setIsDownloadingMasterpiece(true);
       showToast("正在準備下載，這可能需要幾秒鐘...", "info");
-      const res = await fetch(`/api/download?url=${encodeURIComponent(url as string)}`);
-      if (!res.ok) throw new Error("Download failed");
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = "final-masterpiece.mp4";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(blobUrl);
+      try {
+        const res = await fetch(`/api/download?url=${encodeURIComponent(url as string)}`);
+        if (!res.ok) throw new Error("API download endpoint returned non-ok status");
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = "final-masterpiece.mp4";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(blobUrl);
+      } catch (dlErr) {
+        console.warn("Proxy download endpoint failed, falling back to direct anchor download:", dlErr);
+        const a = document.createElement("a");
+        a.href = url as string;
+        a.target = "_blank";
+        a.download = "final-masterpiece.mp4";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
     } catch (error) {
       console.error("Failed to download masterpiece:", error);
       showToast("下載失敗，請稍後再試", "error");
@@ -310,6 +322,17 @@ export default function App() {
   const [selectedSceneForSimulation, setSelectedSceneForSimulation] = useState<Scene | null>(null);
   const [isPlayingSimulation, setIsPlayingSimulation] = useState<boolean>(false);
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (selectedSceneForSimulation && isPlayingSimulation) {
+      const lineToSpeak = selectedSceneForSimulation.dialogue || selectedSceneForSimulation.narration;
+      if (lineToSpeak) {
+        speakDialogue(lineToSpeak);
+      }
+    } else {
+      stopDialogueSpeech();
+    }
+  }, [selectedSceneForSimulation, isPlayingSimulation]);
 
   // Global Character Library & Toast States
   const [characterLibrary, setCharacterLibrary] = useState<Character[]>([]);
@@ -576,10 +599,10 @@ export default function App() {
     };
   }, [activeProjectId]);
 
-  // Auto-scroll full automatic production logs
+  // Auto-scroll full automatic production logs (internal log box only, without stealing window scroll)
   useEffect(() => {
-    if (logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: "smooth" });
+    if (logsEndRef.current && logsEndRef.current.parentElement) {
+      logsEndRef.current.parentElement.scrollTop = logsEndRef.current.parentElement.scrollHeight;
     }
   }, [fullAutoLogs]);
 
@@ -597,11 +620,11 @@ export default function App() {
       }
     }
 
-    if (savedKey && savedKey !== "cpk-CJxrCSyiu9BWsE1yzwrPX2REloaU8cgoPeGH4daMV6NcVSm8") {
+    if (savedKey && savedKey !== "cpk-CJxrCSyiu9BWsE1yzwrPX2REloaU8cgoPeGH4daMV6NcVSm8" && savedKey !== "cpk-oTHuYiCUe46ZJGyd6xcAmNKiP3DjxcUeiIuqEF9saqLZrq8J") {
       setCustomApiKey(savedKey);
     } else {
-      setCustomApiKey("cpk-oTHuYiCUe46ZJGyd6xcAmNKiP3DjxcUeiIuqEF9saqLZrq8J");
-      localStorage.setItem("agnes_custom_api_key", "cpk-oTHuYiCUe46ZJGyd6xcAmNKiP3DjxcUeiIuqEF9saqLZrq8J");
+      setCustomApiKey("sk-ppQhm2lcU0P1n1zfnFVCeDLpfhQ27aRn28Nqw6m5acsefLQf");
+      localStorage.setItem("agnes_custom_api_key", "sk-ppQhm2lcU0P1n1zfnFVCeDLpfhQ27aRn28Nqw6m5acsefLQf");
     }
 
     if (savedProjects) {
@@ -2311,19 +2334,16 @@ const handleTranslatePrompt = async (sceneId: string, engine: 'gemini' | 'agnes'
 
     try {
       const cleanSceneChar = (sceneToGen.character || "").trim().toLowerCase();
-      const sceneIsNoChar = isNoChar(cleanSceneChar);
-      const characterObj = !sceneIsNoChar 
-        ? (freshActiveProject.characters || activeProject?.characters || []).find(c => (c.name || "").trim().toLowerCase() === cleanSceneChar)
-        : undefined;
-      let charDesc = sceneIsNoChar ? "" : (characterObj?.description || "");
-      if (characterObj?.clothing && !sceneIsNoChar) {
-        charDesc += `. Ensure wearing: ${characterObj.clothing}.`;
-      }
-      const characterImages = (!sceneIsNoChar && characterObj?.uploadedAvatarUrls && characterObj.uploadedAvatarUrls.length > 0)
-        ? characterObj.uploadedAvatarUrls
-        : (!sceneIsNoChar && characterObj?.uploadedAvatarUrl
-          ? [characterObj.uploadedAvatarUrl]
-          : (!sceneIsNoChar && (characterObj?.avatarUrls || (characterObj?.avatarUrl ? [characterObj.avatarUrl] : [])) || []));
+      const sceneIsNoChar = isNoChar(cleanSceneChar, sceneToGen.visualPrompt);
+      const resolved = resolveSceneCharacters(
+        sceneToGen.character,
+        sceneToGen.visualPrompt,
+        freshActiveProject.characters || activeProject?.characters || []
+      );
+      const characterObj = resolved.matchingChar;
+      let charDesc = sceneIsNoChar ? "" : resolved.charDesc;
+      let charOutfit = sceneIsNoChar ? "" : resolved.charOutfit;
+      const characterImages = sceneIsNoChar ? [] : resolved.characterImages;
       const charSeed = !sceneIsNoChar ? characterObj?.seed : undefined;
 
       // === Experience Library Auto-Injection & Prompt Optimization ===
@@ -2387,7 +2407,7 @@ const handleTranslatePrompt = async (sceneId: string, engine: 'gemini' | 'agnes'
 
           if (prevSuccessfulScenes.length > 0) {
             const lastSuccessfulScene = prevSuccessfulScenes[prevSuccessfulScenes.length - 1];
-            proactiveInjections += `\n【跨鏡頭角色一致性要求 (Cross-scene Character Continuity)】\n此分鏡角色的外觀與面部細節必須與前一成功鏡頭「分鏡: ${lastSuccessfulScene.title || lastSuccessfulScene.id.substring(0, 5)}」的首幀圖像保持高度一致，包括相同的髮型、眼睛顏色、面部傷痕與特定的風衣戰鬥服細節。不可有任何變更。\n`;
+            proactiveInjections += `\n【跨鏡頭角色與服裝鎖定 (Cross-scene Character & Outfit Continuity)】\n此分鏡角色的外觀、面部特徵與【服裝穿著】必須與角色設定完全一致（${charOutfit || "設定的標準服裝款式"}），必須穿著與前述分鏡完全相同的服裝（顏色、款式、剪裁細節），絕對不可隨意更換服裝款式。\n`;
             isAutoEnhanced = true;
             feedbackNote = feedbackNote 
               ? `${feedbackNote} 並成功鏈接歷史鏡頭以加強跨鏡頭外觀一致性！` 
@@ -2568,7 +2588,7 @@ Anime aesthetic, high resolution, no text, no watermark.
       let startFrameUrl = undefined;
       const index = activeProject.scenes.findIndex((s) => s.id === sceneId);
       if (index > 0 && !sceneIsNoChar) {
-        const prevScene = activeProject.scenes.slice(0, index).reverse().find((s) => s.imageUrl && !isNoChar(s.character) && (s.character || "").trim().toLowerCase() === cleanSceneChar);
+        const prevScene = activeProject.scenes.slice(0, index).reverse().find((s) => s.imageUrl && !isNoChar(s.character, s.visualPrompt) && (s.character || "").trim().toLowerCase() === cleanSceneChar);
         if (prevScene) {
            startFrameUrl = prevScene.imageUrl;
            finalPrompt += "\n[CROSS-SCENE CONSISTENCY]: The character's appearance, clothing, and facial features MUST exactly match the provided previous scene image reference.";
@@ -2576,12 +2596,10 @@ Anime aesthetic, high resolution, no text, no watermark.
       }
 
       if (sceneIsNoChar) {
-        finalPrompt += "\n[PURE SCENERY / NO CHARACTER MANDATE]: This is a pure environmental / background / scenery shot. ABSOLUTELY NO characters, NO humans, NO people, NO faces, NO figures in this image.";
-        if (finalNegativePrompt) {
-          finalNegativePrompt += ", person, human, character, man, woman, face, figure, crowd";
-        } else {
-          finalNegativePrompt = "person, human, character, man, woman, face, figure, crowd";
-        }
+        finalPrompt = `${NO_CHARACTER_MANDATE_PROMPT} ${finalPrompt}`;
+        finalNegativePrompt = buildNegativePrompt(true, finalNegativePrompt);
+      } else {
+        finalNegativePrompt = buildNegativePrompt(false, finalNegativePrompt);
       }
 
       const res = await apiFetch("/api/generate-image", {
@@ -2595,6 +2613,7 @@ Anime aesthetic, high resolution, no text, no watermark.
           artStyle: characterObj?.artStyle || activeProject.artStyle,
           character: sceneIsNoChar ? "無" : sceneToGen.character,
           characterDescription: sceneIsNoChar ? "PURE ENVIRONMENTAL SCENERY SHOT WITH NO CHARACTERS OR HUMANS PRESENT" : charDesc,
+          characterOutfit: sceneIsNoChar ? "" : charOutfit,
           characterImages: sceneIsNoChar ? [] : characterImages,
           seed: charSeed,
           engine: engine,
@@ -3077,53 +3096,65 @@ Anime aesthetic, high resolution, no text, no watermark.
     if (index > 0) {
       const prevScene = freshActiveProject.scenes[index - 1];
       if (prevScene) {
-        const prevVid = prevScene.videoUrlExt || prevScene.videoUrlKeyframes || prevScene.videoUrl;
-        const prevImg = prevScene.imageUrlExt || prevScene.imageUrlKeyframes || prevScene.imageUrl;
+        const curChar = (targetScene.character || "").trim();
+        const prevChar = (prevScene.character || "").trim();
+        const curCharObj = freshActiveProject.characters?.find(c => c.name === curChar);
+        const prevCharObj = freshActiveProject.characters?.find(c => c.name === prevChar);
 
-        if (prevVid) {
-          extendFromVideoUrlForApi = prevVid;
-          try {
-            console.log(`[Toonflow Video Gen] Attempting last frame extraction from prev video: ${prevVid}`);
-            const extractRes = await fetch("/api/extract-last-frame", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ videoUrl: prevVid })
-            });
-            if (extractRes.ok) {
-              const data = await extractRes.json();
-              if (data.imageUrl) {
-                startImageUrlForTransition = data.imageUrl;
-                // Update target scene's start image in state & localStorage so UI reflects it immediately
-                const list = JSON.parse(localStorage.getItem("toonflow_projects") || "[]") as Project[];
-                const nextList = list.map(p => {
-                  if (p.id !== activeProjectId) return p;
-                  return {
-                    ...p,
-                    scenes: p.scenes.map(s => s.id === sceneId ? {
+        const isDiffCharFromPrev = shouldUseHardCut(prevChar, curChar, prevCharObj?.gender, curCharObj?.gender);
+
+        // Only extend from previous video if it is the SAME character
+        if (!isDiffCharFromPrev) {
+          const prevVid = prevScene.videoUrlExt || prevScene.videoUrlKeyframes || prevScene.videoUrl;
+          const prevImg = prevScene.imageUrlExt || prevScene.imageUrlKeyframes || prevScene.imageUrl;
+
+          if (prevVid) {
+            extendFromVideoUrlForApi = prevVid;
+            try {
+              console.log(`[Toonflow Video Gen] Same character detected (${prevChar}). Extracting last frame from prev video: ${prevVid}`);
+              const extractRes = await fetch("/api/extract-last-frame", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ videoUrl: prevVid })
+              });
+              if (extractRes.ok) {
+                const data = await extractRes.json();
+                if (data.imageUrl) {
+                  startImageUrlForTransition = data.imageUrl;
+                  // Update target scene's start image in state & localStorage so UI reflects it immediately
+                  const list = JSON.parse(localStorage.getItem("toonflow_projects") || "[]") as Project[];
+                  const nextList = list.map(p => {
+                    if (p.id !== activeProjectId) return p;
+                    return {
+                      ...p,
+                      scenes: p.scenes.map(s => s.id === sceneId ? {
+                        ...s,
+                        imageUrl: data.imageUrl,
+                        imageUrlExt: data.imageUrl,
+                        imageUrlKeyframes: data.imageUrl
+                      } : s)
+                    };
+                  });
+                  localStorage.setItem("toonflow_projects", JSON.stringify(nextList));
+                  updateActiveProject((prev) => ({
+                    scenes: prev.scenes.map(s => s.id === sceneId ? {
                       ...s,
                       imageUrl: data.imageUrl,
                       imageUrlExt: data.imageUrl,
                       imageUrlKeyframes: data.imageUrl
                     } : s)
-                  };
-                });
-                localStorage.setItem("toonflow_projects", JSON.stringify(nextList));
-                updateActiveProject((prev) => ({
-                  scenes: prev.scenes.map(s => s.id === sceneId ? {
-                    ...s,
-                    imageUrl: data.imageUrl,
-                    imageUrlExt: data.imageUrl,
-                    imageUrlKeyframes: data.imageUrl
-                  } : s)
-                }));
+                  }));
+                }
               }
+            } catch (err) {
+              console.warn("抽取上一分鏡最後一幀失敗，退回使用靜態首幀：", err);
             }
-          } catch (err) {
-            console.warn("抽取上一分鏡最後一幀失敗，退回使用靜態首幀：", err);
           }
-        }
-        if (!startImageUrlForTransition && prevImg && !targetScene.imageUrl && !targetScene.imageUrlExt && !targetScene.imageUrlKeyframes) {
-          startImageUrlForTransition = prevImg;
+          if (!startImageUrlForTransition && prevImg && !targetScene.imageUrl && !targetScene.imageUrlExt && !targetScene.imageUrlKeyframes) {
+            startImageUrlForTransition = prevImg;
+          }
+        } else {
+          console.log(`[Toonflow Video Gen] Different character from previous scene (${prevChar} -> ${curChar}). Skipping previous video frame extraction to prevent character morphing.`);
         }
       }
     }
@@ -3139,12 +3170,20 @@ Anime aesthetic, high resolution, no text, no watermark.
       }
       if (index !== -1 && index < activeProject.scenes.length - 1) {
         const nextScene = activeProject.scenes[index + 1];
-        const foundEndImage = nextScene.imageUrl || nextScene.imageUrlExt || nextScene.imageUrlKeyframes;
-        if (!foundEndImage) {
-          alert(`請先完成下一分鏡「${nextScene.title}」的繪圖，以作為本銜接分鏡影片的結尾影格（尾幀）！`);
-          return;
+        const curChar = (targetScene.character || "").trim();
+        const nextChar = (nextScene.character || "").trim();
+        const isDiffCharToNext = shouldUseHardCut(curChar, nextChar);
+
+        if (!isDiffCharToNext) {
+          const foundEndImage = nextScene.imageUrl || nextScene.imageUrlExt || nextScene.imageUrlKeyframes;
+          if (!foundEndImage) {
+            alert(`請先完成下一分鏡「${nextScene.title}」的繪圖，以作為本銜接分鏡影片的結尾影格（尾幀）！`);
+            return;
+          }
+          endImageUrl = foundEndImage;
+        } else {
+          endImageUrl = undefined;
         }
-        endImageUrl = foundEndImage;
       }
     } else {
       if (!startImageUrlForTransition) {
@@ -3152,9 +3191,21 @@ Anime aesthetic, high resolution, no text, no watermark.
       }
       if (index < freshActiveProject.scenes.length - 1) {
         const nextScene = freshActiveProject.scenes[index + 1];
-        const foundEndImage = nextScene.imageUrlKeyframes || nextScene.imageUrl || nextScene.imageUrlExt;
-        if (foundEndImage) {
-          endImageUrl = foundEndImage;
+        const curChar = (targetScene.character || "").trim();
+        const nextChar = (nextScene.character || "").trim();
+        const curCharObj = freshActiveProject.characters?.find(c => c.name === curChar);
+        const nextCharObj = freshActiveProject.characters?.find(c => c.name === nextChar);
+
+        const isDiffCharToNext = shouldUseHardCut(curChar, nextChar, curCharObj?.gender, nextCharObj?.gender);
+
+        if (!isDiffCharToNext) {
+          const foundEndImage = nextScene.imageUrlKeyframes || nextScene.imageUrl || nextScene.imageUrlExt;
+          if (foundEndImage) {
+            endImageUrl = foundEndImage;
+          }
+        } else {
+          console.log(`[Toonflow Video Gen] Different character in next scene (${curChar} -> ${nextChar}). Disabling endImageUrl to prevent AI morphing.`);
+          endImageUrl = undefined;
         }
       }
     }
@@ -3535,12 +3586,20 @@ Anime aesthetic, high resolution, no text, no watermark.
     if (sceneId.startsWith("scene_transition_")) {
       if (index < freshActiveProject.scenes.length - 1) {
         const nextScene = freshActiveProject.scenes[index + 1];
-        const foundEndImage = nextScene.imageUrlExt || nextScene.imageUrl || nextScene.imageUrlKeyframes;
-        if (!foundEndImage) {
-          alert(`請先完成下一分鏡「${nextScene.title}」的繪圖，以作為本銜接分鏡影片的結尾影格（尾幀）！`);
-          return;
+        const curChar = (targetScene.character || "").trim();
+        const nextChar = (nextScene.character || "").trim();
+        const isDiffCharToNext = shouldUseHardCut(curChar, nextChar);
+
+        if (!isDiffCharToNext) {
+          const foundEndImage = nextScene.imageUrlExt || nextScene.imageUrl || nextScene.imageUrlKeyframes;
+          if (!foundEndImage) {
+            alert(`請先完成下一分鏡「${nextScene.title}」的繪圖，以作為本銜接分鏡影片的結尾影格（尾幀）！`);
+            return;
+          }
+          endImageUrl = foundEndImage;
+        } else {
+          endImageUrl = undefined;
         }
-        endImageUrl = foundEndImage;
       }
     } else {
       // If index > 0, check if previous scene has generated video (only for non-transition scenes)
@@ -3551,8 +3610,17 @@ Anime aesthetic, high resolution, no text, no watermark.
           return;
         }
       }
-      // Use this scene's own storyboard image as the target end image (last frame) for the transition
-      endImageUrl = targetScene.imageUrl || targetScene.imageUrlExt || targetScene.imageUrlKeyframes || undefined;
+      // Use this scene's own storyboard image as target end image ONLY if same character
+      const curChar = (targetScene.character || "").trim();
+      const nextScene = freshActiveProject.scenes[index + 1];
+      const nextChar = nextScene ? (nextScene.character || "").trim() : "";
+      const isDiffCharToNext = nextScene ? shouldUseHardCut(curChar, nextChar) : false;
+
+      if (!isDiffCharToNext) {
+        endImageUrl = targetScene.imageUrl || targetScene.imageUrlExt || targetScene.imageUrlKeyframes || undefined;
+      } else {
+        endImageUrl = undefined;
+      }
     }
 
     // Update specific scene video state to generating
@@ -3574,7 +3642,7 @@ Anime aesthetic, high resolution, no text, no watermark.
 
     try {
       const targetCharLower = (targetScene.character || "").trim().toLowerCase();
-      const isTargetNoChar = isNoChar(targetScene.character);
+      const isTargetNoChar = isNoChar(targetScene.character, targetScene.visualPrompt);
       const characterObj = !isTargetNoChar
         ? freshActiveProject.characters.find(c => {
             const cName = (c.name || "").trim().toLowerCase();
@@ -4103,16 +4171,28 @@ Anime aesthetic, high resolution, no text, no watermark.
     let endImageUrl: string | undefined = undefined;
     if (index < activeProject.scenes.length - 1) {
       const nextScene = activeProject.scenes[index + 1];
-      const foundEndImage = nextScene.imageUrlKeyframes || nextScene.imageUrl || nextScene.imageUrlExt;
-      if (!foundEndImage) {
-        const msg = `請先完成下一分鏡「${nextScene.title}」的繪圖，以作為本分鏡影片的結尾影格！`;
-        updateActiveProject((prev) => ({
-          scenes: prev.scenes.map(s => s.id === sceneId ? { ...s, isGeneratingVideoKeyframes: false, videoErrorKeyframes: msg } : s)
-        }));
-        alert(msg);
-        throw new Error(msg);
+      const curChar = (targetScene.character || "").trim();
+      const nextChar = (nextScene.character || "").trim();
+      const curCharObj = activeProject.characters?.find(c => c.name === curChar);
+      const nextCharObj = activeProject.characters?.find(c => c.name === nextChar);
+
+      const isDiffCharToNext = shouldUseHardCut(curChar, nextChar, curCharObj?.gender, nextCharObj?.gender);
+
+      if (!isDiffCharToNext) {
+        const foundEndImage = nextScene.imageUrlKeyframes || nextScene.imageUrl || nextScene.imageUrlExt;
+        if (!foundEndImage) {
+          const msg = `請先完成下一分鏡「${nextScene.title}」的繪圖，以作為本分鏡影片的結尾影格！`;
+          updateActiveProject((prev) => ({
+            scenes: prev.scenes.map(s => s.id === sceneId ? { ...s, isGeneratingVideoKeyframes: false, videoErrorKeyframes: msg } : s)
+          }));
+          alert(msg);
+          throw new Error(msg);
+        }
+        endImageUrl = foundEndImage;
+      } else {
+        console.log(`[Toonflow Video Keyframes] Disabling endImageUrl for character shift (${curChar} -> ${nextChar}) to prevent morphing.`);
+        endImageUrl = undefined;
       }
-      endImageUrl = foundEndImage;
     }
 
     // Calculate transition duration - respect user set duration directly rather than forcing a long fixed duration
@@ -4581,11 +4661,15 @@ Anime aesthetic, high resolution, no text, no watermark.
     if (!activeProjectId) return null;
     const imageField = activeTab === "scenes_ext" ? "imageUrlExt" : (activeTab === "scenes_keyframes" ? "imageUrlKeyframes" : "imageUrl");
     const videoField = activeTab === "scenes_ext" ? "videoUrlExt" : (activeTab === "scenes_keyframes" ? "videoUrlKeyframes" : "videoUrl");
-    const timeoutMs = opts?.timeoutMs ?? 8000;
+    const timeoutMs = opts?.timeoutMs ?? 15000;
     const skipMedia = !!opts?.skipMedia;
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch (err) {}
+    }, timeoutMs);
 
     try {
       const backupRes = await fetch(`/api/load-backup-assets?projectId=${encodeURIComponent(activeProjectId)}`, {
@@ -4680,8 +4764,10 @@ Anime aesthetic, high resolution, no text, no watermark.
       }
     } catch (e: any) {
       const isAbort = e?.name === "AbortError" || String(e?.message || "").toLowerCase().includes("abort");
-      console.error("Failed to restore from server backup:", e);
-      if (!silent) {
+      if (silent) {
+        console.warn("[Toonflow Backup Bypass] Silent restore backup note:", e?.message || e);
+      } else {
+        console.error("Failed to restore from server backup:", e);
         showToast(isAbort ? "⚠️ 備份連線逾時，已略過。" : ("⚠️ 抽回備份失敗: " + (e.message || e)), "error");
       }
       if (isAbort) throw new Error("BACKUP_RESTORE_TIMEOUT");
@@ -5213,13 +5299,13 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
             const freshS = curProj?.scenes.find(s => s.id === scene.id) || scene;
             const currentImgUrl = freshS[imageField] || freshS.imageUrl || freshS.imageUrlKeyframes;
 
-            const isSceneNoChar = isNoChar(freshS.character);
+            const isSceneNoChar = isNoChar(freshS.character, freshS.visualPrompt);
             const characterObj = !isSceneNoChar 
               ? activeProject.characters.find(c => (c.name || "").trim().toLowerCase() === (freshS.character || "").trim().toLowerCase()) 
               : null;
 
             const prevScene = (i > 0 && !isSceneNoChar) ? (curProj?.scenes[i - 1] || currentScenes[i - 1]) : null;
-            const prevSceneHasSameChar = prevScene && !isNoChar(prevScene.character) && (prevScene.character || "").trim().toLowerCase() === (freshS.character || "").trim().toLowerCase();
+            const prevSceneHasSameChar = prevScene && !isNoChar(prevScene.character, prevScene.visualPrompt) && (prevScene.character || "").trim().toLowerCase() === (freshS.character || "").trim().toLowerCase();
             const prevImageUrl = prevSceneHasSameChar ? (prevScene[imageField] || prevScene.imageUrl || prevScene.imageUrlKeyframes) : null;
 
             const resReview = await apiFetch("/api/workflow/review-image", {
@@ -5228,6 +5314,7 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
               body: JSON.stringify({
                 imageUrl: currentImgUrl,
                 visualPrompt: freshS.visualPrompt,
+                character: isSceneNoChar ? "無" : freshS.character,
                 characterDescription: isSceneNoChar
                   ? "【特別標註：本分鏡為「無登場角色」之純環境/風景/建築鏡頭，畫面中絕對不可出現任何人物或角色】"
                   : (characterObj?.description || ""),
@@ -5251,28 +5338,121 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
 
             if (strictWorkflowLock) {
               if (!passed) {
-                // Auto-improve prompt if AI provided one
-                if (reviewData.optimizedVisualPrompt) {
-                  setFullAutoLogs(prev => [...prev, `✨ [AI 智慧優化] 偵測到畫面邏輯缺陷，正在自動重構並強化提示詞...`]);
+                let newPromptToUse = reviewData.optimizedVisualPrompt;
+                if (!newPromptToUse && isSceneNoChar) {
+                  newPromptToUse = `${NO_CHARACTER_MANDATE_PROMPT} Scene: ${freshS.title || freshS.visualPrompt || "background scenery"}. Completely empty environment.`;
+                }
+
+                if (!newPromptToUse) {
+                  try {
+                    const fixRes = await apiFetch("/api/workflow/auto-fix-prompt", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        scene: freshS,
+                        critique: text,
+                        artStyle: activeProject.artStyle || "",
+                        customApiKey: customApiKey || undefined
+                      })
+                    }, { retries: 1, timeoutMs: 20000, label: "提示詞修復 API" });
+                    if (fixRes.ok) {
+                      const fixData = await fixRes.json();
+                      if (fixData.fixedVisualPrompt) newPromptToUse = fixData.fixedVisualPrompt;
+                    }
+                  } catch (e) {}
+                }
+
+                if (newPromptToUse) {
+                  setFullAutoLogs(prev => [...prev, `✨ [AI 智慧優化] 偵測到畫面邏輯缺陷，已自動重構提示詞："${newPromptToUse.slice(0, 70)}..."`]);
                   updateActiveProject((prev) => ({
                     scenes: prev.scenes.map(s => s.id === scene.id ? {
                       ...s,
-                      visualPrompt: reviewData.optimizedVisualPrompt
+                      visualPrompt: newPromptToUse,
+                      step2OptimizedPrompt: newPromptToUse
                     } : s)
                   }));
-                  
                   try {
                     const curList = JSON.parse(localStorage.getItem("toonflow_projects") || "[]") as Project[];
                     const updatedList = curList.map(p => p.id === activeProjectId ? {
                       ...p,
                       scenes: p.scenes.map(s => s.id === scene.id ? {
                         ...s,
-                        visualPrompt: reviewData.optimizedVisualPrompt
+                        visualPrompt: newPromptToUse,
+                        step2OptimizedPrompt: newPromptToUse
                       } : s)
                     } : p);
                     localStorage.setItem("toonflow_projects", JSON.stringify(updatedList)); localStorage.setItem("toonflow_last_sync_timestamp", Date.now().toString());
                   } catch(e) {}
                 }
+
+                if (reviewRetryCount < maxReviewAttempts) {
+                  setFullAutoLogs(prev => [...prev, `[鏡頭 ${i + 1}] 🔄 正在根據修復後的提示詞與負向詞重新繪製首幀圖片 (嘗試 ${reviewRetryCount + 1}/${maxReviewAttempts})...`]);
+                  
+                  const updatedNegPrompt = reviewData.optimizedNegativePrompt || generateSceneNegativePrompt({
+                    character: freshS.character,
+                    visualPrompt: newPromptToUse || freshS.visualPrompt,
+                    artStyle: activeProject.artStyle || "",
+                    currentNegative: freshS.negativePrompt,
+                    isNoCharacter: isSceneNoChar
+                  });
+
+                  // Persist the repaired negative prompt back to scene
+                  updateActiveProject((prev) => ({
+                    scenes: prev.scenes.map(s => s.id === scene.id ? {
+                      ...s,
+                      negativePrompt: updatedNegPrompt,
+                      step2OptimizedNegative: updatedNegPrompt
+                    } : s)
+                  }));
+
+                  try {
+                    const genRes = await apiFetch("/api/generate-image", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        prompt: newPromptToUse || freshS.visualPrompt,
+                        negativePrompt: updatedNegPrompt,
+                        character: isSceneNoChar ? "無" : freshS.character,
+                        characterDescription: isSceneNoChar ? "" : (characterObj?.description || ""),
+                        artStyle: activeProject.artStyle || "",
+                        isAvatar: false,
+                        sceneType: "storyboard",
+                        customApiKey: customApiKey || undefined
+                      })
+                    }, { retries: 2, timeoutMs: 45000, label: "重新繪製首幀" });
+
+                    if (genRes.ok) {
+                      const genData = await genRes.json();
+                      if (genData.imageUrl) {
+                        const newUrl = genData.imageUrl;
+                        updateActiveProject((prev) => ({
+                          scenes: prev.scenes.map(s => s.id === scene.id ? {
+                            ...s,
+                            [imageField]: newUrl,
+                            imageUrlExt: newUrl,
+                            imageUrlKeyframes: newUrl
+                          } : s)
+                        }));
+                        try {
+                          const curList = JSON.parse(localStorage.getItem("toonflow_projects") || "[]") as Project[];
+                          const updatedList = curList.map(p => p.id === activeProjectId ? {
+                            ...p,
+                            scenes: p.scenes.map(s => s.id === scene.id ? {
+                              ...s,
+                              [imageField]: newUrl,
+                              imageUrlExt: newUrl,
+                              imageUrlKeyframes: newUrl
+                            } : s)
+                          } : p);
+                          localStorage.setItem("toonflow_projects", JSON.stringify(updatedList));
+                        } catch(e) {}
+                      }
+                    }
+                  } catch (reGenErr: any) {
+                    console.warn("重新繪製首幀圖片失敗：", reGenErr);
+                  }
+                }
+
                 throw new Error(`首幀審核未通過（當前分數：${score}/100，本次所需及格線：${minRequiredScore} 分）。建議：${text}`);
               } else {
                 if (score < 70) {
@@ -5654,6 +5834,62 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
 
               if (strictWorkflowLock) {
                 if (!passed) {
+                  if (vidRetryCount < maxVidAttempts) {
+                    setFullAutoLogs(prev => [...prev, `[鏡頭 ${i + 1}] 💡 審核未通過（分數：${score}/100）。正在根據導演建議自動修正提示詞...`]);
+                    try {
+                      const fixRes = await apiFetch("/api/workflow/auto-fix-prompt", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          scene: freshSFinal,
+                          critique: text,
+                          artStyle: activeProject.artStyle || "",
+                          customApiKey: customApiKey || undefined
+                        })
+                      }, { retries: 1, timeoutMs: 25000, label: "提示詞修復 API" });
+
+                      if (fixRes.ok) {
+                        const fixData = await fixRes.json();
+                        if (fixData.fixedVisualPrompt) {
+                          const newVisual = fixData.fixedVisualPrompt;
+                          const newAction = fixData.fixedActionPrompt || freshSFinal.actionPrompt || "";
+
+                          // Update memory object
+                          scene.visualPrompt = newVisual;
+                          scene.step2OptimizedPrompt = newVisual;
+                          if (newAction) scene.actionPrompt = newAction;
+
+                          updateActiveProject((prev) => ({
+                            scenes: prev.scenes.map(s => s.id === scene.id ? {
+                              ...s,
+                              visualPrompt: newVisual,
+                              step2OptimizedPrompt: newVisual,
+                              actionPrompt: newAction || s.actionPrompt
+                            } : s)
+                          }));
+
+                          try {
+                            const curList = JSON.parse(localStorage.getItem("toonflow_projects") || "[]") as Project[];
+                            const updatedList = curList.map(p => p.id === activeProjectId ? {
+                              ...p,
+                              scenes: p.scenes.map(s => s.id === scene.id ? {
+                                ...s,
+                                visualPrompt: newVisual,
+                                step2OptimizedPrompt: newVisual,
+                                actionPrompt: newAction || s.actionPrompt
+                              } : s)
+                            } : p);
+                            localStorage.setItem("toonflow_projects", JSON.stringify(updatedList));
+                          } catch(e) {}
+
+                          setFullAutoLogs(prev => [...prev, `[鏡頭 ${i + 1}] ✨ 提示詞已修復完成：${fixData.explanation || "已修正視覺與台詞/動作的敘事一致性，並增強視覺張力"}`]);
+                        }
+                      }
+                    } catch (fixErr) {
+                      console.warn("Auto-fix prompt failed:", fixErr);
+                    }
+                  }
+
                   throw new Error(`影片審核未通過（當前分數：${score}/100，本次所需及格線：${minRequiredScore} 分）。建議：${text}`);
                 } else {
                   if (score < 70) {
@@ -5717,7 +5953,9 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
               throw new Error("影片網址映射錯誤");
             }
           } catch (vidErr: any) {
-            setFullAutoLogs(prev => [...prev, `[鏡頭 ${i + 1}] ⚠️ 影片生成或審核失敗 (嘗試 ${vidRetryCount}/${maxVidAttempts}): ${vidErr.message || vidErr}`]);
+            const errStr = String(vidErr?.message || vidErr || "");
+            const isRateLimit = errStr.includes("rate_limit") || errStr.includes("rate limit") || errStr.includes("429") || errStr.includes("allows 2 requests");
+            setFullAutoLogs(prev => [...prev, `[鏡頭 ${i + 1}] ⚠️ 影片生成或審核提示 (嘗試 ${vidRetryCount}/${maxVidAttempts}): ${errStr}`]);
             if (vidRetryCount >= maxVidAttempts) {
               if (strictWorkflowLock) {
                 setFullAutoLogs(prev => [...prev, `🛑 [嚴格安全鎖防護] 鏡頭 ${i + 1} 影片合成或審查未通過，工作流中斷，等待手動調整！`]);
@@ -5795,7 +6033,12 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
                 videoSuccess = true;
               }
             } else {
-              await new Promise(r => setTimeout(r, 2000));
+              if (isRateLimit) {
+                setFullAutoLogs(prev => [...prev, `⏳ [鏡頭 ${i + 1}] 觸發 Agnes 頻率限制 (每分鐘上限 2 次)，正在自動安全冷卻等待 32 秒後自動重試...`]);
+                await new Promise(r => setTimeout(r, 32000));
+              } else {
+                await new Promise(r => setTimeout(r, 3000));
+              }
             }
           }
         }
@@ -5902,7 +6145,7 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ videoUrls: orderedVideoUrls })
-      }, { retries: 2, timeoutMs: 120000, label: "影片拼接 API" });
+      }, { retries: 2, timeoutMs: 240000, label: "影片拼接 API" });
 
       if (!stitchRes.body) throw new Error("No response body from server");
       
@@ -6020,7 +6263,7 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ videoUrls: orderedVideoUrls })
-      }, { timeoutMs: 120000, label: "影片拼接" });
+      }, { timeoutMs: 240000, label: "影片拼接" });
 
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("text/html")) {
@@ -6171,10 +6414,10 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
           title: `鏡頭 ${nextSceneIndex}`,
           dialogue: `(鏡頭 ${nextSceneIndex} 的即時對白...)`,
           narration: "",
-          character: activeProject.characters[0]?.name || "主角",
-          visualPrompt: `High quality cinematic shot for Shot ${nextSceneIndex}, ${activeProject.artStyle}, detailed atmospheric background, consistent character design, completely clean video, no subtitles, no text`,
-          actionPrompt: `Character moves gracefully in Shot ${nextSceneIndex}, ${activeProject.cameraMotion || "smooth zoom"}`,
-          step7AdviceForNext: "保持角色造型與光影與前一鏡頭連貫。"
+          character: newSceneData?.character || "無",
+          visualPrompt: `High quality cinematic shot for Shot ${nextSceneIndex}, ${activeProject.artStyle}, detailed atmospheric background, completely clean video, no subtitles, no text`,
+          actionPrompt: `Camera moves gracefully in Shot ${nextSceneIndex}, ${activeProject.cameraMotion || "smooth zoom"}`,
+          step7AdviceForNext: "保持畫面質感與光影連貫。"
         };
       }
 
@@ -6183,7 +6426,7 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
         title: newSceneData.title || `鏡頭 ${nextSceneIndex}`,
         dialogue: newSceneData.dialogue || "",
         narration: newSceneData.narration || "",
-        character: newSceneData.character || activeProject.characters[0]?.name || "主角",
+        character: newSceneData.character || "無",
         visualPrompt: newSceneData.visualPrompt || `Cinematic shot for scene ${nextSceneIndex}, ${activeProject.artStyle}`,
         actionPrompt: newSceneData.actionPrompt || "",
         transitionPrompt: newSceneData.transitionPrompt || "",
@@ -9094,7 +9337,7 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
                                             {/* Scene Cards Loop */}
                       <div className="space-y-6">
                         {activeProject.scenes.map((scene, index) => {
-                          const matchingChar = activeProject.characters.find(c => (c.name || "").trim().toLowerCase() === (scene.character || "").trim().toLowerCase());
+                          const matchingChar = resolveSceneCharacters(scene.character, scene.visualPrompt, activeProject.characters).matchingChar;
                           return (
                             <div key={scene.id} className="space-y-2">
                               <SceneItem 
@@ -9372,7 +9615,7 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
                     {/* Scene Cards Loop - Exactly matching Image 2 (圖二) format */}
                     <div className="space-y-6">
                       {activeProject.scenes.map((scene, index) => {
-                        const matchingChar = activeProject.characters.find(c => (c.name || "").trim().toLowerCase() === (scene.character || "").trim().toLowerCase());
+                        const matchingChar = resolveSceneCharacters(scene.character, scene.visualPrompt, activeProject.characters).matchingChar;
                         return (
                           <div key={scene.id} className="space-y-2">
                             <SceneItem 
@@ -9867,7 +10110,7 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
                       {/* Scene Cards Loop */}
                       <div className="space-y-6">
                         {activeProject.scenes.map((scene, index) => {
-                          const matchingChar = activeProject.characters.find(c => (c.name || "").trim().toLowerCase() === (scene.character || "").trim().toLowerCase());
+                          const matchingChar = resolveSceneCharacters(scene.character, scene.visualPrompt, activeProject.characters).matchingChar;
                           return (
                             <div key={scene.id} className="space-y-2">
                               {index < activeProject.scenes.length - 1 ? (
@@ -10033,16 +10276,23 @@ function decideHardCutMode(currentScene: any, nextScene: any, characters: any[] 
 
                  {/* Simulated Audio waveform visualization */}
                 <div className="absolute top-12 right-6 z-30 flex flex-col items-end space-y-1.5">
-                  <div className="flex items-center space-x-0.5 bg-black/75 backdrop-blur-md border border-slate-800/80 px-3 py-1.5 rounded-full text-[10px] font-mono text-pink-400 font-bold shadow-lg">
+                  <button
+                    onClick={() => {
+                      const lineToSpeak = selectedSceneForSimulation.dialogue || selectedSceneForSimulation.narration;
+                      if (lineToSpeak) speakDialogue(lineToSpeak);
+                    }}
+                    className="flex items-center space-x-0.5 bg-black/85 hover:bg-black backdrop-blur-md border border-pink-500/40 px-3 py-1.5 rounded-full text-[10px] font-mono text-pink-300 font-bold shadow-lg cursor-pointer transition active:scale-95"
+                    title="點擊重播語音對白"
+                  >
                     <Volume2 className="w-3.5 h-3.5 mr-1 text-pink-400 animate-bounce" />
-                    <span>TTS 音訊合成: 已開啟 (24kHz)</span>
+                    <span>TTS 語音朗讀: 已播放 (點擊重播)</span>
                     <div className="flex items-end h-3 space-x-0.5 ml-2">
                       <div className="w-0.5 bg-pink-500 animate-soundwave-1" />
                       <div className="w-0.5 bg-pink-500 animate-soundwave-2" />
                       <div className="w-0.5 bg-pink-500 animate-soundwave-3" />
                       <div className="w-0.5 bg-pink-500 animate-soundwave-4" />
                     </div>
-                  </div>
+                  </button>
                   {selectedSceneForSimulation.audioCue && (
                     <div className="bg-black/85 backdrop-blur-md border border-pink-500/20 text-pink-300 font-sans px-3 py-1 text-[10px] font-bold rounded-lg max-w-[280px] shadow-lg flex items-center gap-1 animate-pulse">
                       <span className="text-yellow-400">🎵</span>

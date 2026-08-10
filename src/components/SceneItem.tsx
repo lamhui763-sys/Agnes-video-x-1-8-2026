@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import { Scene, Character, Project } from '../types';
-import { Trash2, GripVertical, Clock, Info, Sparkles, Users, ChevronLeft, Plus, RefreshCw, Upload, Film, CheckCircle, AlertCircle, ArrowRight, Star, HelpCircle, Play } from 'lucide-react';
+import { Trash2, GripVertical, Clock, Info, Sparkles, Users, ChevronLeft, Plus, RefreshCw, Upload, Film, CheckCircle, AlertCircle, ArrowRight, Star, HelpCircle, Play, Volume2, ShieldAlert, Sliders } from 'lucide-react';
 import { STYLE_PRESETS } from '../data'; // Need to make sure this is available
 import { ScrubbableVideoPlayer } from './ScrubbableVideoPlayer';
-import { isNoChar } from '../lib/promptBuilder';
+import { isNoChar, generateSceneNegativePrompt, buildNegativePrompt } from '../lib/promptBuilder';
+import { resolveSceneCharacters } from '../lib/projectUtils';
+import { speakDialogue } from '../lib/ttsUtils';
 
 interface SceneItemProps {
   scene: Scene;
@@ -27,7 +29,7 @@ interface SceneItemProps {
   scenes: Scene[];
   activeProjectId: string;
   setProjects: React.Dispatch<React.SetStateAction<Project[]>>;
-  showToast: (message: string, type: 'success' | 'error') => void;
+  showToast: (message: string, type?: 'success' | 'error' | 'info') => void;
   isFullAutoProducing?: boolean;
   fullAutoProgress?: string;
   fullAutoLogs?: string[];
@@ -71,6 +73,8 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
   const isGenVidField = sceneType === "ext" ? "isGeneratingVideoExt" : (sceneType === "keyframes" ? "isGeneratingVideoKeyframes" : "isGeneratingVideo");
   const videoField = sceneType === "ext" ? "videoUrlExt" : (sceneType === "keyframes" ? "videoUrlKeyframes" : "videoUrl");
   const errorField = sceneType === "ext" ? "videoErrorExt" : (sceneType === "keyframes" ? "videoErrorKeyframes" : "videoError");
+  const progressField = sceneType === "ext" ? "videoProgressExt" : (sceneType === "keyframes" ? "videoProgressKeyframes" : "videoProgress");
+  const logsField = sceneType === "ext" ? "videoLogsExt" : (sceneType === "keyframes" ? "videoLogsKeyframes" : "videoLogs");
 
   const nextSceneData = index < scenes.length - 1 ? scenes[index + 1] : undefined;
   const endImageField = sceneType === "ext" ? "imageUrlExt" : (sceneType === "keyframes" ? "imageUrlKeyframes" : "imageUrl");
@@ -189,6 +193,7 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
         ? (scenes[index - 1].step7AdviceForNext || scene.step1PrevShotAdvice || "") 
         : "";
 
+      const resolvedChar = resolveSceneCharacters(scene.character, scene.visualPrompt, activeProjectCharacters || []);
       const res = await fetch("/api/optimize-prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -196,7 +201,8 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
           prompt: scene.visualPrompt,
           artStyle: STYLE_PRESETS[0]?.prompt || "",
           character: scene.character || "旁白",
-          characterDescription: matchingChar?.description || "",
+          characterDescription: resolvedChar.charDesc || matchingChar?.description || "",
+          characterOutfit: resolvedChar.charOutfit || "",
           context: prevAdvice ? `上一個鏡頭傳遞的銜接建議：${prevAdvice}` : "",
           sceneId: scene.id,
           projectId: activeProjectId,
@@ -230,6 +236,49 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
     }
   };
 
+  // Auto-fill and tailor negative prompt for the current scene to resolve review issues
+  const handleAutoFillSceneNegativePrompt = () => {
+    const isSceneNoChar = isNoChar(scene.character, scene.visualPrompt);
+    const curProjList = JSON.parse(localStorage.getItem("toonflow_projects") || "[]") as Project[];
+    const activeProj = curProjList.find(p => p.id === activeProjectId);
+    const artStyle = activeProj?.artStyle || "";
+
+    const generatedNegative = generateSceneNegativePrompt({
+      character: scene.character,
+      visualPrompt: scene.visualPrompt,
+      artStyle,
+      currentNegative: scene.negativePrompt,
+      isNoCharacter: isSceneNoChar
+    });
+
+    handleUpdateSceneField(scene.id, "negativePrompt", generatedNegative);
+    updateSceneMultipleFields({
+      negativePrompt: generatedNegative,
+      step2OptimizedNegative: generatedNegative
+    });
+    showToast("🛡️ 已審查本鏡頭並自動填入場景特定負向詞（包含 abstract background, gradient, blurry 等）！", "success");
+  };
+
+  const handleAppendNegativeTag = (tag: string) => {
+    const current = (scene.negativePrompt || "").trim();
+    const existingTokens = current.split(",").map(t => t.trim().toLowerCase());
+    const newTokens = tag.split(",").map(t => t.trim()).filter(Boolean);
+    const toAdd = newTokens.filter(t => !existingTokens.includes(t.toLowerCase()));
+
+    if (toAdd.length === 0) {
+      showToast("該負向提示詞已存在", "info");
+      return;
+    }
+
+    const updated = current ? `${current}, ${toAdd.join(", ")}` : toAdd.join(", ");
+    handleUpdateSceneField(scene.id, "negativePrompt", updated);
+    updateSceneMultipleFields({
+      negativePrompt: updated,
+      step2OptimizedNegative: updated
+    });
+    showToast(`已追加負向詞：${toAdd.join(", ")}`, "success");
+  };
+
   // Trigger Step 4: AI Storyboard Image Review
   const handleTriggerStep4Review = async () => {
     if (!scene[imageField]) {
@@ -243,9 +292,9 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
       const activeProj = curProjList.find(p => p.id === activeProjectId);
       const artStyle = activeProj?.artStyle || "";
 
-      const isSceneNoChar = isNoChar(scene.character);
+      const isSceneNoChar = isNoChar(scene.character, scene.visualPrompt);
       const prevScene = (index > 0 && !isSceneNoChar) ? scenes[index - 1] : null;
-      const prevSceneHasSameChar = prevScene && !isNoChar(prevScene.character) && (prevScene.character || "").trim().toLowerCase() === (scene.character || "").trim().toLowerCase();
+      const prevSceneHasSameChar = prevScene && !isNoChar(prevScene.character, prevScene.visualPrompt) && (prevScene.character || "").trim().toLowerCase() === (scene.character || "").trim().toLowerCase();
       const prevImageUrl = prevSceneHasSameChar ? (prevScene[imageField] || prevScene.imageUrl || prevScene.imageUrlKeyframes) : null;
       
       const customApiKey = localStorage.getItem("toonflow_custom_api_key") || undefined;
@@ -258,7 +307,7 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
           visualPrompt: scene.visualPrompt,
           characterDescription: isSceneNoChar 
             ? "【特別標註：本分鏡為「無登場角色」之純環境/風景/建築鏡頭，畫面中絕對不可出現任何人物或角色】" 
-            : (matchingChar?.description || ""),
+            : (resolveSceneCharacters(scene.character, scene.visualPrompt, activeProjectCharacters || []).charDesc || matchingChar?.description || ""),
           sceneId: scene.id,
           projectId: activeProjectId,
           artStyle,
@@ -269,13 +318,33 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
 
       if (!res.ok) throw new Error("審核超時");
       const data = await res.json();
+
+      const suggestedNegative = data.optimizedNegativePrompt || generateSceneNegativePrompt({
+        character: scene.character,
+        visualPrompt: scene.visualPrompt,
+        artStyle,
+        currentNegative: scene.negativePrompt,
+        isNoCharacter: isSceneNoChar
+      });
+
+      const hasPassed = data.passed !== undefined ? data.passed : (data.score >= 70);
+
       updateSceneMultipleFields({
         step4ImageReviewScore: data.score || 85,
         step4ImageReviewText: data.critique || "構圖流暢，角色特徵契合，建議前往下一步。",
-        step4Passed: data.passed !== undefined ? data.passed : true,
-        isReviewingStep4: false
+        step4Passed: hasPassed,
+        isReviewingStep4: false,
+        // If review failed, auto-populate recommended negative prompt to resolve defects
+        ...(!hasPassed ? {
+          negativePrompt: suggestedNegative,
+          step2OptimizedNegative: suggestedNegative
+        } : {})
       });
-      showToast("🔍 AI 畫面審核完成！", "success");
+      if (hasPassed) {
+        showToast("🔍 AI 畫面審核完成：通過及格標準！", "success");
+      } else {
+        showToast("⚠️ 首幀審核未通過，已自動為您注入該場景專屬負向詞以修正品質！", "info");
+      }
     } catch (err) {
       console.error(err);
       updateSceneMultipleFields({
@@ -401,11 +470,16 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
       }`}
     >
       <button
-        onClick={() => handleDeleteScene(scene.id)}
-        className="absolute top-4 right-4 p-1.5 bg-slate-950 hover:bg-red-950/80 border border-slate-800 rounded-lg text-slate-500 hover:text-red-400 transition"
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          handleDeleteScene(scene.id);
+        }}
+        className="absolute top-4 right-4 px-3 py-1.5 bg-red-950/80 hover:bg-red-900 border border-red-700/60 rounded-xl text-red-300 hover:text-white transition flex items-center gap-1.5 text-xs font-bold shadow-lg shadow-red-950/50 cursor-pointer group z-30 hover:scale-105 active:scale-95"
         title="刪除此分鏡"
       >
-        <Trash2 className="w-3.5 h-3.5" />
+        <Trash2 className="w-3.5 h-3.5 text-red-400 group-hover:text-white" />
+        <span>刪除分鏡</span>
       </button>
 
       {/* Global Auto Generation Trigger for the whole workflow */}
@@ -582,7 +656,18 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 block">AI 優化後的負向提示詞 (Optimized Negative Prompt)</label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-bold text-slate-400 block">AI 優化後的負向提示詞 (Optimized Negative Prompt)</label>
+                    <button
+                      type="button"
+                      onClick={handleAutoFillSceneNegativePrompt}
+                      className="text-[9.5px] text-rose-400 hover:text-rose-300 font-mono flex items-center gap-1 cursor-pointer transition"
+                      title="自動填入 abstract background, gradient, blurry 等場景防缺陷負向詞"
+                    >
+                      <Sparkles className="w-2.5 h-2.5 text-rose-400" />
+                      <span>注入特定負向詞</span>
+                    </button>
+                  </div>
                   <textarea
                     rows={2}
                     className="w-full bg-slate-950 border border-slate-850 rounded-lg p-2 text-xs text-slate-300 focus:border-indigo-500 focus:outline-none placeholder-slate-600 font-mono"
@@ -720,7 +805,11 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
                 <div className="bg-slate-950/70 border border-slate-850 rounded-lg p-3 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold text-emerald-400 block uppercase tracking-wider font-mono">AI 畫面核查結果：</span>
-                    <span className="text-xs font-mono font-bold px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full">
+                    <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded-full border ${
+                      (scene.step4ImageReviewScore || 0) >= 70 && scene.step4Passed !== false
+                        ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                        : "bg-rose-500/10 text-rose-400 border-rose-500/20"
+                    }`}>
                       畫面健康度分數：{scene.step4ImageReviewScore || 0}/100
                     </span>
                   </div>
@@ -729,6 +818,42 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
                     <div className="mt-2 pt-2 border-t border-slate-800/60">
                       <span className="text-[10px] font-bold text-teal-400 block uppercase tracking-wider font-mono mb-1">🔗 首尾影格無縫對接審核：</span>
                       <p className="text-[11px] text-slate-300 leading-relaxed font-sans">{scene.aiReviewSeamlessCheck}</p>
+                    </div>
+                  )}
+
+                  {/* Smart Quality Defect Banner for Failed Review */}
+                  {(!scene.step4Passed || (scene.step4ImageReviewScore !== undefined && scene.step4ImageReviewScore < 70)) && (
+                    <div className="mt-2.5 p-2.5 bg-rose-950/40 border border-rose-600/40 rounded-lg space-y-2">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                        <div className="space-y-0.5">
+                          <h6 className="text-[11px] font-bold text-rose-300">首幀審核未通過 / 檢測到品質與一致性缺陷</h6>
+                          <p className="text-[10.5px] text-rose-200/80 leading-relaxed">
+                            系統建議自動填入場景特定負向詞（如 <code className="bg-rose-900/60 px-1 py-0.5 rounded text-rose-100 font-mono text-[9.5px]">abstract background, gradient, blurry</code>、純風景/肢體防畸變詞）以徹底排除問題並重新繪製。
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleAutoFillSceneNegativePrompt();
+                            updateSceneMultipleFields({ workflowStep: 3 });
+                            handleGenerateImage(scene.id, 'agnes');
+                          }}
+                          className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold rounded shadow flex items-center gap-1.5 transition active:scale-95 cursor-pointer"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" />
+                          <span>🔧 一鍵修復負向詞並重新繪圖</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleAutoFillSceneNegativePrompt}
+                          className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-[11px] font-bold rounded transition cursor-pointer"
+                        >
+                          僅注入負向詞
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1063,25 +1188,47 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
               placeholder="例如：主角"
               onKeyDown={handleKeyDown}
             />
-            {activeProjectCharacters && activeProjectCharacters.length > 0 && (
-              <div className="mt-1 flex flex-wrap gap-1">
-                {activeProjectCharacters.map(c => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => handleUpdateSceneField(scene.id, "character", c.name)}
-                    className={`px-1.5 py-0.5 rounded text-[9px] border transition cursor-pointer ${
-                      (scene.character || "").trim().toLowerCase() === (c.name || "").trim().toLowerCase()
-                        ? "bg-pink-950/80 text-pink-400 border-pink-500/40 font-bold"
-                        : "bg-slate-950 text-slate-500 border-slate-850 hover:text-slate-300 hover:border-slate-800"
-                    }`}
-                    title={`快速選擇：${c.name}`}
-                  >
-                    {c.name}
-                  </button>
-                ))}
-              </div>
-            )}
+            <div className="mt-1 flex flex-wrap gap-1 items-center">
+              <button
+                type="button"
+                onClick={() => handleUpdateSceneField(scene.id, "character", "無")}
+                className={`px-1.5 py-0.5 rounded text-[9px] border transition cursor-pointer ${
+                  isNoChar(scene.character)
+                    ? "bg-amber-950/90 text-amber-300 border-amber-500/60 font-bold"
+                    : "bg-slate-950 text-slate-500 border-slate-850 hover:text-slate-300 hover:border-slate-800"
+                }`}
+                title="標記為無登場角色（純景物/空鏡頭）"
+              >
+                無角色 (空鏡)
+              </button>
+              <button
+                type="button"
+                onClick={() => handleUpdateSceneField(scene.id, "character", "旁白")}
+                className={`px-1.5 py-0.5 rounded text-[9px] border transition cursor-pointer ${
+                  (scene.character || "").trim() === "旁白"
+                    ? "bg-amber-950/90 text-amber-300 border-amber-500/60 font-bold"
+                    : "bg-slate-950 text-slate-500 border-slate-850 hover:text-slate-300 hover:border-slate-800"
+                }`}
+                title="標記為旁白/音效"
+              >
+                旁白
+              </button>
+              {activeProjectCharacters && activeProjectCharacters.length > 0 && activeProjectCharacters.map(c => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => handleUpdateSceneField(scene.id, "character", c.name)}
+                  className={`px-1.5 py-0.5 rounded text-[9px] border transition cursor-pointer ${
+                    !isNoChar(scene.character) && (scene.character || "").trim().toLowerCase() === (c.name || "").trim().toLowerCase()
+                      ? "bg-pink-950/80 text-pink-400 border-pink-500/40 font-bold"
+                      : "bg-slate-950 text-slate-500 border-slate-850 hover:text-slate-300 hover:border-slate-800"
+                  }`}
+                  title={`快速選擇：${c.name}`}
+                >
+                  {c.name}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="space-y-1">
             <div className="flex justify-between items-center mb-0.5">
@@ -1099,9 +1246,21 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
         {/* Subtitle / Dialogue / Audio Cue Split */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1">
-            <label className="text-[10px] font-mono text-indigo-400 font-bold uppercase flex items-center gap-1">
-              <span>🗣️ 角色說的話 (台詞對白)</span>
-            </label>
+            <div className="flex justify-between items-center mb-0.5">
+              <label className="text-[10px] font-mono text-indigo-400 font-bold uppercase flex items-center gap-1">
+                <span>🗣️ 角色說的話 (台詞對白)</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => speakDialogue(scene.dialogue || scene.narration || "")}
+                disabled={!scene.dialogue && !scene.narration}
+                className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 cursor-pointer transition active:scale-95"
+                title="點擊語音朗讀此條台詞"
+              >
+                <Volume2 className="w-3 h-3" />
+                <span>朗讀試聽</span>
+              </button>
+            </div>
             <textarea
               className="w-full bg-slate-950 border border-slate-850 rounded-lg p-3 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 transition min-h-[60px]"
               value={scene.dialogue || ""}
@@ -1111,9 +1270,21 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
             />
           </div>
           <div className="space-y-1">
-            <label className="text-[10px] font-mono text-emerald-400 font-bold uppercase flex items-center gap-1">
-              <span>📖 背景場景旁白 (旁白字幕)</span>
-            </label>
+            <div className="flex justify-between items-center mb-0.5">
+              <label className="text-[10px] font-mono text-emerald-400 font-bold uppercase flex items-center gap-1">
+                <span>📖 背景場景旁白 (旁白字幕)</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => speakDialogue(scene.narration || "")}
+                disabled={!scene.narration}
+                className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 cursor-pointer transition active:scale-95"
+                title="點擊語音朗讀此條旁白"
+              >
+                <Volume2 className="w-3 h-3" />
+                <span>朗讀試聽</span>
+              </button>
+            </div>
             <textarea
               className="w-full bg-slate-950 border border-slate-850 rounded-lg p-3 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 transition min-h-[60px]"
               value={scene.narration || ""}
@@ -1168,6 +1339,75 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
             onKeyDown={handleKeyDown}
           />
         </div>
+
+        {/* Negative Prompt Section */}
+        <div className="space-y-1.5 p-2.5 bg-slate-950/70 border border-slate-800/80 rounded-lg">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+            <label className="text-[10px] font-mono text-rose-400 font-bold uppercase flex items-center gap-1">
+              <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+              <span>🚫 負向提示詞 (Negative Prompt)</span>
+              <span className="text-[9px] text-slate-400 font-normal">（防範首幀審核不通過）</span>
+            </label>
+            <button
+              type="button"
+              onClick={handleAutoFillSceneNegativePrompt}
+              className="px-2 py-0.5 bg-rose-950/80 hover:bg-rose-900 border border-rose-600/40 text-rose-300 hover:text-rose-100 rounded text-[10px] font-bold transition flex items-center gap-1 cursor-pointer active:scale-95 shadow-sm"
+              title="審查當前鏡頭角色與設定，自動填入 abstract background, gradient, blurry 及場景專屬負向詞"
+            >
+              <Sparkles className="w-3 h-3 text-rose-300" />
+              <span>🔍 智能審查並自動填入場景負向詞</span>
+            </button>
+          </div>
+          <textarea
+            className="w-full bg-slate-900/90 border border-slate-800 rounded-md p-2 text-xs text-rose-200/90 focus:outline-none focus:border-rose-500 transition min-h-[52px] font-mono placeholder:text-slate-600"
+            value={scene.negativePrompt || ""}
+            onChange={(e) => {
+              handleUpdateSceneField(scene.id, "negativePrompt", e.target.value);
+              updateSceneMultipleFields({ negativePrompt: e.target.value, step2OptimizedNegative: e.target.value });
+            }}
+            placeholder="例如: abstract background, gradient, blurry, low resolution, bad anatomy, deformed hands, text, watermark..."
+          />
+          {/* Quick Negative Chips */}
+          <div className="flex items-center gap-1 flex-wrap pt-0.5">
+            <span className="text-[9px] text-slate-500 font-mono">快速填入：</span>
+            <button
+              type="button"
+              onClick={() => handleAppendNegativeTag("abstract background, gradient, blurry, out of focus")}
+              className="px-1.5 py-0.5 bg-slate-900 hover:bg-rose-950/60 border border-slate-800 hover:border-rose-700/50 text-[9.5px] text-slate-300 hover:text-rose-300 rounded transition cursor-pointer"
+            >
+              + 抽象漸層與模糊
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAppendNegativeTag("person, human, student, students, people, face, crowd, figure")}
+              className="px-1.5 py-0.5 bg-slate-900 hover:bg-rose-950/60 border border-slate-800 hover:border-rose-700/50 text-[9.5px] text-slate-300 hover:text-rose-300 rounded transition cursor-pointer"
+            >
+              + 純風景禁人物
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAppendNegativeTag("deformed hands, extra fingers, missing fingers, bad anatomy, extra limbs")}
+              className="px-1.5 py-0.5 bg-slate-900 hover:bg-rose-950/60 border border-slate-800 hover:border-rose-700/50 text-[9.5px] text-slate-300 hover:text-rose-300 rounded transition cursor-pointer"
+            >
+              + 防肢體畸變
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAppendNegativeTag("extra people, ghost figures, duplicate characters, cloned faces")}
+              className="px-1.5 py-0.5 bg-slate-900 hover:bg-rose-950/60 border border-slate-800 hover:border-rose-700/50 text-[9.5px] text-slate-300 hover:text-rose-300 rounded transition cursor-pointer"
+            >
+              + 防多餘複製人物
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAppendNegativeTag("low quality, worst quality, jpeg artifacts, text, watermark, signature")}
+              className="px-1.5 py-0.5 bg-slate-900 hover:bg-rose-950/60 border border-slate-800 hover:border-rose-700/50 text-[9.5px] text-slate-300 hover:text-rose-300 rounded transition cursor-pointer"
+            >
+              + 高清無水印
+            </button>
+          </div>
+        </div>
+
         {/* Action Prompt */}
         <div className="space-y-1">
           <label className="text-[10px] font-mono text-slate-500 font-bold uppercase block">
@@ -1283,7 +1523,7 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
             {/* If video generated, show below */}
             {scene[videoField] && (
               <div className="relative aspect-video w-full bg-black rounded-xl overflow-hidden border border-slate-800 shadow-inner mt-4">
-                <ScrubbableVideoPlayer src={scene[videoField]} className="w-full h-full object-cover" />
+                <ScrubbableVideoPlayer src={scene[videoField]} dialogue={scene.dialogue || scene.narration} className="w-full h-full object-cover" />
                 <div className="absolute top-2 right-2 flex gap-1 z-30">
                   <button
                     onClick={(e) => {
@@ -1358,6 +1598,7 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
             <div className="relative w-full h-full" onClick={(e) => e.stopPropagation()}>
               <ScrubbableVideoPlayer
                 src={scene[videoField]}
+                dialogue={scene.dialogue || scene.narration}
                 className="w-full h-full object-cover"
               />
               {/* Manual redo / reset button */}
@@ -1387,8 +1628,8 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
                                 ...s,
                                 [imageField]: undefined,
                                 [videoField]: undefined,
-                                [(sceneType === "ext" ? "videoProgressExt" : (sceneType === "keyframes" ? "videoProgressKeyframes" : "videoProgress"))]: undefined,
-                                [(sceneType === "ext" ? "videoLogsExt" : (sceneType === "keyframes" ? "videoLogsKeyframes" : "videoLogs"))]: undefined,
+                                [progressField]: undefined,
+                                [logsField]: undefined,
                                 [errorField]: undefined
                               };
                             }
@@ -1460,8 +1701,8 @@ const SceneItem: React.FC<SceneItemProps> = React.memo(({
                                     ...s,
                                     [imageField]: undefined,
                                     [videoField]: undefined,
-                                    [(sceneType === "ext" ? "videoProgressExt" : (sceneType === "keyframes" ? "videoProgressKeyframes" : "videoProgress"))]: undefined,
-                                    [(sceneType === "ext" ? "videoLogsExt" : (sceneType === "keyframes" ? "videoLogsKeyframes" : "videoLogs"))]: undefined,
+                                    [progressField]: undefined,
+                                    [logsField]: undefined,
                                     [errorField]: undefined
                                   };
                                 }

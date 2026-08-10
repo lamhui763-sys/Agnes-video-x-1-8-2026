@@ -61,7 +61,7 @@ export const SettingsDrawer = ({
                   <input
                     type="password"
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-xs font-mono text-slate-200 focus:outline-none focus:border-pink-500 transition placeholder:text-slate-700"
-                    placeholder="cpk-oTHuYiCU..."
+                    placeholder="sk-ppQhm2lc..."
                     value={customApiKey}
                     onChange={(e) => onSaveApiKey(e.target.value)}
                   />

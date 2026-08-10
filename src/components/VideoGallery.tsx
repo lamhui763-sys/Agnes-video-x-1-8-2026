@@ -19,17 +19,28 @@ export default function VideoGallery({ activeProject }: VideoGalleryProps) {
     if (downloadingUrl) return;
     try {
       setDownloadingUrl(url);
-      const res = await fetch(`/api/download?url=${encodeURIComponent(url)}`);
-      if (!res.ok) throw new Error("Download failed");
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(blobUrl);
+      try {
+        const res = await fetch(`/api/download?url=${encodeURIComponent(url)}`);
+        if (!res.ok) throw new Error("API download failed");
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(blobUrl);
+      } catch (dlErr) {
+        console.warn("Proxy download endpoint failed, falling back to direct anchor download:", dlErr);
+        const a = document.createElement("a");
+        a.href = url;
+        a.target = "_blank";
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
     } catch (error) {
       console.error("Failed to download video:", error);
       alert("下載失敗，請稍後再試");

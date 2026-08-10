@@ -1,7 +1,8 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Play, Pause, Maximize2, Download, Loader2 } from 'lucide-react';
+import { Play, Pause, Maximize2, Download, Loader2, Volume2 } from 'lucide-react';
+import { speakDialogue } from '../lib/ttsUtils';
 
-export const ScrubbableVideoPlayer = ({ src, className }: { src: string, className?: string }) => {
+export const ScrubbableVideoPlayer = ({ src, className, dialogue }: { src: string, className?: string, dialogue?: string }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
@@ -86,6 +87,9 @@ export const ScrubbableVideoPlayer = ({ src, className }: { src: string, classNa
         video.pause();
       }
     } else {
+      if (dialogue) {
+        speakDialogue(dialogue);
+      }
       const promise = video.play();
       if (promise !== undefined) {
         playPromiseRef.current = promise;
@@ -118,17 +122,28 @@ export const ScrubbableVideoPlayer = ({ src, className }: { src: string, classNa
     if (isDownloading) return;
     try {
       setIsDownloading(true);
-      const res = await fetch(`/api/download?url=${encodeURIComponent(src)}`);
-      if (!res.ok) throw new Error("Download failed");
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = "video.mp4";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(blobUrl);
+      try {
+        const res = await fetch(`/api/download?url=${encodeURIComponent(src)}`);
+        if (!res.ok) throw new Error("API download failed");
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = "video.mp4";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(blobUrl);
+      } catch (dlErr) {
+        console.warn("Proxy download endpoint failed, falling back to direct anchor download:", dlErr);
+        const a = document.createElement("a");
+        a.href = src;
+        a.target = "_blank";
+        a.download = "video.mp4";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
     } catch (error) {
       console.error("Failed to download video:", error);
       alert("下載失敗，請稍後再試");
@@ -184,6 +199,19 @@ export const ScrubbableVideoPlayer = ({ src, className }: { src: string, classNa
               <span className="text-white text-[11px] font-mono opacity-80">
                 {currentTime.toFixed(2)}s / {duration.toFixed(2)}s
               </span>
+              {dialogue && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    speakDialogue(dialogue);
+                  }}
+                  className="flex items-center gap-1 text-[10px] font-mono text-pink-300 bg-pink-500/20 hover:bg-pink-500/30 px-2 py-0.5 rounded-full border border-pink-500/30 transition cursor-pointer"
+                  title="朗讀對白語音"
+                >
+                  <Volume2 className="w-3 h-3 text-pink-400" />
+                  <span>朗讀對白</span>
+                </button>
+              )}
             </div>
             
             <div className="flex items-center gap-3">

@@ -37,6 +37,8 @@ import { Project, Scene, Character, DEFAULT_SCENE } from '../types';
 import { apiJson } from '../lib/apiClient';
 import { extractLastFrameFromVideo } from '../lib/frameExtractor';
 import { ScrubbableVideoPlayer } from './ScrubbableVideoPlayer';
+import { shouldUseHardCut } from '../lib/promptBuilder';
+import { resolveSceneCharacters } from '../lib/projectUtils';
 
 const STYLE_PRESETS = [
   {
@@ -147,17 +149,28 @@ export const SequentialChainMode: React.FC<SequentialChainModeProps> = ({
     if (isDownloadingStitched || !stitchedResultUrl) return;
     try {
       setIsDownloadingStitched(true);
-      const res = await fetch(`/api/download?url=${encodeURIComponent(stitchedResultUrl)}`);
-      if (!res.ok) throw new Error("Download failed");
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = "final-stitched-film.mp4";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(blobUrl);
+      try {
+        const res = await fetch(`/api/download?url=${encodeURIComponent(stitchedResultUrl)}`);
+        if (!res.ok) throw new Error("API download failed");
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = "final-stitched-film.mp4";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(blobUrl);
+      } catch (dlErr) {
+        console.warn("Proxy download endpoint failed, falling back to direct anchor download:", dlErr);
+        const a = document.createElement("a");
+        a.href = stitchedResultUrl;
+        a.target = "_blank";
+        a.download = "final-stitched-film.mp4";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
     } catch (error) {
       console.error("Failed to download stitched video:", error);
       alert("下載失敗，請稍後再試");
@@ -249,7 +262,9 @@ export const SequentialChainMode: React.FC<SequentialChainModeProps> = ({
     } catch (e) {}
   }, [project.id]);
 
-  const getCharDesc = (charName: string): string => {
+  const getCharDesc = (charName: string, scenePrompt: string = ''): string => {
+    const resolved = resolveSceneCharacters(charName, scenePrompt, characters);
+    if (resolved.charDesc) return resolved.charDesc;
     const c = characters.find(
       (x) => (x.name || '').trim() === (charName || '').trim()
     );
@@ -379,6 +394,9 @@ export const SequentialChainMode: React.FC<SequentialChainModeProps> = ({
                 ...DEFAULT_SCENE,
                 id: uid(),
                 title: `鏡頭 ${i + 1} (背景恢復)`,
+                dialogue: "",
+                character: "旁白",
+                visualPrompt: "",
                 isGeneratingVideo: true,
                 currentStep: 3,
                 step1Passed: true,
@@ -408,6 +426,9 @@ export const SequentialChainMode: React.FC<SequentialChainModeProps> = ({
                     ...DEFAULT_SCENE,
                     id: uid(),
                     title: `鏡頭 ${i + 1}`,
+                    dialogue: "",
+                    character: "旁白",
+                    visualPrompt: "",
                     isGeneratingVideo: true,
                     currentStep: 3,
                     step1Passed: true,
@@ -583,6 +604,14 @@ export const SequentialChainMode: React.FC<SequentialChainModeProps> = ({
       prompt = `[UNIFIED STYLE: ${activeStyleText}]. ${prompt}`;
     }
 
+    const prevSceneObj = index > 0 ? list[index - 1] : null;
+    const isHardCutNeeded = prevSceneObj ? shouldUseHardCut(prevSceneObj.character, scene.character) : false;
+    const effectiveImageUrl = isHardCutNeeded ? undefined : opts.imageUrl;
+
+    if (isHardCutNeeded) {
+      addLog(`[CHAIN] 偵測到人物切換 (${prevSceneObj?.character} -> ${scene.character})，不使用上一鏡頭尾幀以防止 AI 產生不自然的人物臉部變形 (Morphing)`, 'info');
+    }
+
     const body: any = {
       prompt,
       visualPrompt: scene.visualPrompt ? `[UNIFIED STYLE: ${activeStyleText}]. ${scene.visualPrompt}` : `[UNIFIED STYLE: ${activeStyleText}]`,
@@ -594,7 +623,8 @@ export const SequentialChainMode: React.FC<SequentialChainModeProps> = ({
       character: scene.character,
       characterDescription: charDesc,
       artStyle: activeStyleText,
-      imageUrl: opts.imageUrl, // 使用上一鏡頭尾幀作為本鏡頭首幀
+      imageUrl: effectiveImageUrl, // 使用上一鏡頭尾幀作為本鏡頭首幀（同人物時）
+      isHardCut: isHardCutNeeded,
       durationSeconds: scene.durationSeconds || 8,
       agnesVideoMode: project.agnesVideoMode || 'quality',
       sceneIndex: index,
@@ -1704,10 +1734,10 @@ export const SequentialChainMode: React.FC<SequentialChainModeProps> = ({
                       handleDeleteShot(i);
                     }}
                     title={`刪除鏡頭 ${i + 1}`}
-                    className="p-1.5 rounded-lg bg-red-950/40 border border-red-500/30 text-red-300 hover:bg-red-900/60 hover:text-red-100 transition cursor-pointer flex items-center gap-1 text-[11px]"
+                    className="px-2.5 py-1.5 rounded-lg bg-red-950/60 border border-red-500/40 text-red-300 hover:bg-red-900/80 hover:text-white transition cursor-pointer flex items-center gap-1.5 text-xs font-bold shadow"
                   >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">刪除鏡頭</span>
+                    <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                    <span>刪除鏡頭</span>
                   </button>
                 </div>
 

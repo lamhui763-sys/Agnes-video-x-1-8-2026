@@ -141,7 +141,14 @@ def create_video_task(base_url, api_key, payload, timeout):
             return res
         except SystemExit as exc:
             err_str = str(exc)
-            if any(term in err_str for term in ("503", "500", "502", "504", "Service busy", "do request failed", "upstream error")):
+            if any(term in err_str for term in ("429", "rate_limit", "rate limit", "allows 2 requests")):
+                if attempt < max_retries - 1:
+                    print(f"[SYSTEM] 觸發 Agnes 頻率限制 (每分鐘上限 2 次)，正在自動等待 32 秒後自動重試... (重試第 {attempt + 1}/{max_retries} 次)", file=sys.stderr)
+                    time.sleep(32)
+                    continue
+                else:
+                    raise
+            elif any(term in err_str for term in ("503", "500", "502", "504", "Service busy", "do request failed", "upstream error")):
                 if attempt < max_retries - 1:
                     print(f"[SYSTEM] Agnes server busy or returned transient error: {err_str}. Retrying in 10 seconds... (Attempt {attempt + 1}/{max_retries})", file=sys.stderr)
                     time.sleep(10)
