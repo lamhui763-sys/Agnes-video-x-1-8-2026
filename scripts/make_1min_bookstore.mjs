@@ -198,7 +198,28 @@ async function genImage(shot) {
     body: JSON.stringify(body),
   }, 180000);
   if (!data.imageUrl) throw new Error("no imageUrl");
-  return data.imageUrl;
+  let url = data.imageUrl;
+  // Re-host Agnes platform-outputs → Catbox so video API can download
+  if (url.includes("agnes-ai.space") || url.includes("platform-outputs")) {
+    try {
+      const rh = await api(
+        "/api/rehost-image",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageUrl: url }),
+        },
+        120000
+      );
+      if (rh.imageUrl) {
+        console.log("rehosted:", rh.imageUrl.slice(0, 80));
+        url = rh.imageUrl;
+      }
+    } catch (e) {
+      console.warn("rehost failed, using original:", e.message);
+    }
+  }
+  return url;
 }
 
 async function genVideo(shot, imageUrl) {

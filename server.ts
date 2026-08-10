@@ -2198,23 +2198,32 @@ async function ensurePublicCdnUrl(urlOrPath: string, activeTaskLogs?: string[], 
     return urlOrPath;
   }
 
-  // Check if it is already hosted on a known clean public direct image CDN that Agnes API reliably accepts
+  // Only trust Catbox-style direct hosts that Agnes video can fetch reliably.
+  // NOTE: platform-outputs.agnes-ai.space often FAILS when re-fetched by Agnes video API — always rehost.
   const isAlreadyDirectCdn = (
     urlOrPath.includes("litter.catbox.moe/") ||
     urlOrPath.includes("files.catbox.moe/") ||
-    urlOrPath.includes("unsplash.com") ||
-    urlOrPath.includes("pollinations.ai") ||
-    urlOrPath.includes("picsum.photos") ||
-    urlOrPath.includes("wikimedia.org")
-  ) && 
-  !urlOrPath.includes("localhost") && 
-  !urlOrPath.includes("127.0.0.1") && 
-  !urlOrPath.includes("ais-dev-") && 
-  !urlOrPath.includes("ais-pre-");
+    urlOrPath.includes("iili.io/") ||
+    urlOrPath.includes("tmpfiles.org/") ||
+    urlOrPath.includes("qu.ax/")
+  ) &&
+  !urlOrPath.includes("localhost") &&
+  !urlOrPath.includes("127.0.0.1");
 
   if (isAlreadyDirectCdn) {
     return urlOrPath;
   }
+
+  // Force re-host for Agnes own CDN / Railway / local assets
+  const mustRehost =
+    urlOrPath.includes("platform-outputs") ||
+    urlOrPath.includes("agnes-ai.space") ||
+    urlOrPath.includes("railway.app") ||
+    urlOrPath.includes("localhost") ||
+    urlOrPath.includes("127.0.0.1") ||
+    urlOrPath.includes("/assets/") ||
+    urlOrPath.startsWith("assets/") ||
+    !urlOrPath.startsWith("http");
 
   let filename = "";
   try {
@@ -2232,25 +2241,24 @@ async function ensurePublicCdnUrl(urlOrPath: string, activeTaskLogs?: string[], 
     filename = filename.split("?")[0].split("#")[0];
     let targetLocalPath = filename ? path.join(process.cwd(), "assets", filename) : "";
 
-    if (!targetLocalPath || !fs.existsSync(targetLocalPath)) {
-      const isLocalOrAppUrl = urlOrPath.includes("localhost") || 
-                              urlOrPath.includes("127.0.0.1") || 
-                              urlOrPath.includes("ais-dev-") || 
-                              urlOrPath.includes("ais-pre-");
-      if (urlOrPath.startsWith("http") && !isLocalOrAppUrl) {
-        // Remote external URL: download locally first to re-host on a clean direct CDN
-        try {
-          const tempName = `remote-img-${Date.now()}.png`;
-          const tempPath = path.join(process.cwd(), "assets", tempName);
-          if (activeTaskLogs) activeTaskLogs.push(`[SYSTEM] 正在為 Agnes API 下載與轉存參考圖片至高相容性公有圖床...`);
-          await downloadImage(urlOrPath, tempPath);
-          if (fs.existsSync(tempPath)) {
-            targetLocalPath = tempPath;
-          }
-        } catch (dlErr: any) {
-          console.warn("[Toonflow] Failed to download remote image for CDN upload:", dlErr.message);
+    if ((!targetLocalPath || !fs.existsSync(targetLocalPath)) && urlOrPath.startsWith("http")) {
+      // Always try download+rehost for remote URLs Agnes may not re-fetch
+      try {
+        const extGuess = (filename.split(".").pop() || "png").slice(0, 4);
+        const tempName = `remote-img-${Date.now()}.${extGuess === "jpeg" ? "jpg" : extGuess}`;
+        const tempPath = path.join(process.cwd(), "assets", tempName);
+        if (activeTaskLogs) activeTaskLogs.push(`[SYSTEM] 正在下載並轉存公開圖床（避免 Agnes 影片 400 image URL）…`);
+        console.log("[ensurePublicCdnUrl] downloading for rehost:", urlOrPath.substring(0, 120));
+        await downloadImage(urlOrPath, tempPath);
+        if (fs.existsSync(tempPath) && fs.statSync(tempPath).size > 500) {
+          targetLocalPath = tempPath;
         }
+      } catch (dlErr: any) {
+        console.warn("[Toonflow] Failed to download remote image for CDN upload:", dlErr.message);
+        if (activeTaskLogs) activeTaskLogs.push(`[SYSTEM] 下載來源圖失敗: ${dlErr.message}`);
       }
+    } else if (mustRehost && targetLocalPath && fs.existsSync(targetLocalPath)) {
+      if (activeTaskLogs) activeTaskLogs.push(`[SYSTEM] 本地/受限圖床 → 轉存 Agnes 可讀取的公開 CDN…`);
     }
 
     if (targetLocalPath && fs.existsSync(targetLocalPath)) {
@@ -2292,13 +2300,10 @@ async function ensurePublicCdnUrl(urlOrPath: string, activeTaskLogs?: string[], 
     console.warn("[Toonflow Error] ensurePublicCdnUrl exception:", err.message);
   }
 
-  // If conversion/download/upload failed and the original URL is restricted (like platform-outputs), use fallback
-  if (urlOrPath.includes("platform-outputs") || urlOrPath.includes("localhost") || urlOrPath.startsWith("/assets/")) {
-    const cleanFallback = fallbackUrl || "https://images.unsplash.com/photo-1579783902614-a3fb3927b675?auto=format&fit=crop&w=800&q=80";
-    if (activeTaskLogs) activeTaskLogs.push(`[SYSTEM] 參考圖片轉存不相容，自動啟用安全預設公有圖床：${cleanFallback}`);
-    return cleanFallback;
+  // Do NOT fall back to Unsplash stock (breaks identity + often rejected). Keep original URL as last resort.
+  if (activeTaskLogs) {
+    activeTaskLogs.push(`[SYSTEM] 警告：未能轉存公開 CDN，將使用原圖 URL（Agnes 可能 400）: ${urlOrPath.substring(0, 100)}`);
   }
-
   return urlOrPath;
 }
 
@@ -4562,6 +4567,22 @@ function extractLastFrameWithFFmpeg(localVideoPath: string, localExtFramePath: s
 
   return false;
 }
+
+// Re-host any image URL to a public CDN Agnes video can download (fixes platform-outputs 400)
+app.post("/api/rehost-image", async (req, res) => {
+  const { imageUrl } = req.body || {};
+  if (!imageUrl) return res.status(400).json({ error: "imageUrl required" });
+  try {
+    const publicBaseUrl = getPublicBaseUrl(req);
+    const logs: string[] = [];
+    const out = await ensurePublicCdnUrl(imageUrl, logs, undefined, publicBaseUrl);
+    console.log("[rehost-image]", imageUrl.substring(0, 80), "→", out?.substring?.(0, 80), logs.join(" | "));
+    return res.json({ imageUrl: out, logs });
+  } catch (e: any) {
+    console.error("[rehost-image] failed", e);
+    return res.status(500).json({ error: e?.message || "rehost failed" });
+  }
+});
 
 // Toonflow Feature: Extract last frame from video using ffmpeg
 app.post("/api/extract-last-frame", async (req, res) => {
