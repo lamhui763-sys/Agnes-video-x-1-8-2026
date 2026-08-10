@@ -223,9 +223,6 @@ async function genImage(shot) {
 }
 
 async function genVideo(shot, imageUrl) {
-  try {
-    await api("/api/reset-task", { method: "POST" }, 15000);
-  } catch {}
   const body = {
     prompt: `[CHARACTER IDENTITY LOCK]: ${charDesc(shot.character)}. ${shot.actionPrompt}. Keep exact same face and outfit as start frame.`,
     visualPrompt: shot.visualPrompt,
@@ -239,16 +236,38 @@ async function genVideo(shot, imageUrl) {
     agnesVideoMode: "quality",
     sceneType: "chain",
   };
-  await api(
-    "/api/generate",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
-    60000
-  );
-  return waitVideo();
+
+  // Agnes video: often 2 req / minute — wait + retry on 429
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      await api("/api/reset-task", { method: "POST" }, 15000);
+    } catch {}
+    if (attempt > 1) {
+      const waitSec = 70;
+      console.log(`Rate-limit/backoff: waiting ${waitSec}s before video attempt ${attempt}/5…`);
+      await new Promise((r) => setTimeout(r, waitSec * 1000));
+    }
+    try {
+      await api(
+        "/api/generate",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+        60000
+      );
+      return await waitVideo();
+    } catch (e) {
+      const msg = String(e.message || e);
+      if (/429|rate limit/i.test(msg) && attempt < 5) {
+        console.warn("Video rate limited:", msg.slice(0, 120));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error("video failed after retries");
 }
 
 async function main() {
