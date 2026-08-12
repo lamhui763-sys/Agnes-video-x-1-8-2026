@@ -6,3 +6,19 @@ coverage/
 !dist/
 .env*
 !.env.example
+
+# Binary media assets
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+*.webm
+*.webp
+!assets/.gitkeep
+
+# Server-side data files (should be in .env or excluded)
+toonflow_*.json
+experience_library.jsonl
+*.backup.json
+
