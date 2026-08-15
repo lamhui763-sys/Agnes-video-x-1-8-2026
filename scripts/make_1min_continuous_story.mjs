@@ -309,8 +309,13 @@ async function main() {
     throw new Error(`Local server is not ready at ${BASE}: ${error.message}`);
   });
 
-  console.log("Generating one identity-locked first frame…");
-  let startFrameUrl = await generateIdentityAnchor();
+  const providedAnchorUrl = (process.env.STORY_ANCHOR_URL || "").trim();
+  if (providedAnchorUrl) {
+    console.log("Using provided public identity anchor URL…");
+  } else {
+    console.log("Generating one identity-locked first frame…");
+  }
+  let startFrameUrl = providedAnchorUrl || await generateIdentityAnchor();
   const videoUrls = [];
 
   for (let index = 0; index < SHOTS.length; index += 1) {
