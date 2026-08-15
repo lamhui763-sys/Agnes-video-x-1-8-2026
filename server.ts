@@ -3132,6 +3132,20 @@ ${antiMorphingSection}
           activeTask.logs.push(`[SYSTEM] 雲端上傳略過，使用本地路徑 /assets/${outputFilename}`);
         }
       } else {
+        // Python urllib can occasionally fail its TLS handshake in hosted Linux
+        // environments even though Node's fetch path remains available. Switch
+        // transports for this request instead of immediately failing the shot.
+        const pythonTlsFailure = activeTask.logs.some((entry) =>
+          /SSL:|UNEXPECTED_EOF_WHILE_READING|TLSV1|CERTIFICATE_VERIFY_FAILED/i.test(entry)
+        );
+        if (pythonTlsFailure) {
+          activeTask.status = "in_progress";
+          activeTask.progress = "5%";
+          activeTask.logs.push("[SYSTEM] Python TLS connection was interrupted; switching this video request to the Native Node.js HTTP engine.");
+          await runAgnesVideoInNode({ payload: nodePayload, sanitizedAgnesKey, outputFilename, activeTask });
+          return;
+        }
+
         activeTask.status = "failed";
 
         // Try to find a more descriptive error from the logs
