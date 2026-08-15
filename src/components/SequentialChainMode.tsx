@@ -37,7 +37,7 @@ import { Project, Scene, Character, DEFAULT_SCENE } from '../types';
 import { apiJson } from '../lib/apiClient';
 import { extractLastFrameFromVideo } from '../lib/frameExtractor';
 import { ScrubbableVideoPlayer } from './ScrubbableVideoPlayer';
-import { shouldUseHardCut } from '../lib/promptBuilder';
+import { CONTINUOUS_STORY_DIRECTIVE, shouldUseHardCut } from '../lib/promptBuilder';
 import { resolveSceneCharacters } from '../lib/projectUtils';
 
 const STYLE_PRESETS = [
@@ -619,7 +619,7 @@ export const SequentialChainMode: React.FC<SequentialChainModeProps> = ({
     const identityLock = charDesc
       ? `[CHARACTER IDENTITY LOCK]: ${charDesc}. Keep EXACT same face, hair, body, outfit for whole clip. `
       : '';
-    let prompt = identityLock + (scene.actionPrompt || scene.visualPrompt || scene.title || 'cinematic motion');
+    let prompt = `${identityLock}${CONTINUOUS_STORY_DIRECTIVE} ${scene.actionPrompt || scene.visualPrompt || scene.title || 'cinematic motion'}`;
     if (opts.advice) {
       prompt = `${prompt}. Continuity from previous shot: ${opts.advice}`;
     }
@@ -639,8 +639,8 @@ export const SequentialChainMode: React.FC<SequentialChainModeProps> = ({
     const body: any = {
       prompt,
       visualPrompt: scene.visualPrompt
-        ? `[UNIFIED STYLE: ${activeStyleText}]. ${identityLock}${scene.visualPrompt}`
-        : `[UNIFIED STYLE: ${activeStyleText}]. ${identityLock}`,
+        ? `[UNIFIED STYLE: ${activeStyleText}]. ${identityLock}${CONTINUOUS_STORY_DIRECTIVE} ${scene.visualPrompt}`
+        : `[UNIFIED STYLE: ${activeStyleText}]. ${identityLock}${CONTINUOUS_STORY_DIRECTIVE}`,
       actionPrompt: scene.actionPrompt,
       transitionPrompt: scene.transitionPrompt,
       dialogue: scene.dialogue,
@@ -656,6 +656,18 @@ export const SequentialChainMode: React.FC<SequentialChainModeProps> = ({
       agnesVideoMode: project.agnesVideoMode || 'quality',
       sceneIndex: index,
       sceneType: 'chain',
+      // Pass the previous story state as well as its last frame. The server uses this
+      // to preserve the ongoing action rather than treating every clip as a new trailer beat.
+      prevScene: prevSceneObj ? {
+        title: prevSceneObj.title,
+        visualPrompt: prevSceneObj.visualPrompt,
+        actionPrompt: prevSceneObj.actionPrompt,
+        transitionPrompt: prevSceneObj.transitionPrompt,
+        dialogue: prevSceneObj.dialogue,
+        narration: prevSceneObj.narration,
+        directorNotes: prevSceneObj.directorNotes,
+      } : undefined,
+      continuityMode: 'continuous-story',
       requireCharacterConsistency: true,
     };
 

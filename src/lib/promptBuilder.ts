@@ -299,6 +299,13 @@ export const HARD_CUT_INSTRUCTION =
   'Hard cut transition. Instant camera cutaway. Keep the exact same character identity, face, hair, gender, and clothing from the START FRAME throughout the entire clip. Do NOT morph, do NOT transform, do NOT change gender, do NOT blend faces. No face morphing, no body morphing, no gender change. Sudden camera cut only, strict single character identity preservation.';
 
 /**
+ * Direction for a short-film beat rather than a trailer, montage, or event list.
+ * It is deliberately concise so it can be safely repeated in all video prompts.
+ */
+export const CONTINUOUS_STORY_DIRECTIVE =
+  '[CONTINUOUS STORY MODE] Treat this clip as one uninterrupted beat in an ongoing scene, not a montage, trailer, music video, or shot list. Begin from the exact physical and emotional state of the start frame. Show one principal action followed by one natural reaction, with restrained real-time pacing. Preserve screen direction, eyeline, body position, lighting, location, and emotional tone. Use one gentle, motivated camera movement only. No time jump, location jump, pose reset, rapid cut, dramatic reveal, unrelated insert, or sequence of separate events.';
+
+/**
  * Build high-quality Image Prompt
  * Focus: details, composition, lighting, art style
  */
@@ -364,6 +371,8 @@ export function buildVideoPrompt(options: {
   extra?: string;
   isHardCut?: boolean;
   isNoCharacter?: boolean;
+  /** Defaults to true to keep each generated clip a coherent story beat. */
+  continuousStoryMode?: boolean;
 }): string {
   let prompt = (options.sceneDescription || '').trim();
 
@@ -376,12 +385,17 @@ export function buildVideoPrompt(options: {
     prompt = prependCharacterDescription(prompt, options.characters);
   }
 
-  // 2. Camera motion
+  // 2. Keep the shot as one connected narrative beat unless explicitly disabled.
+  if (options.continuousStoryMode !== false && !(options.isNoCharacter || isNoChar(options.characters?.[0], prompt))) {
+    prompt += `. ${CONTINUOUS_STORY_DIRECTIVE}`;
+  }
+
+  // 3. Camera motion
   if (options.cameraMotion) {
     prompt += `. ${options.cameraMotion}`;
   }
 
-  // 3. Style + motion related
+  // 4. Style + motion related
   switch (options.style) {
     case 'fairy-tale':
       prompt +=
@@ -399,12 +413,12 @@ export function buildVideoPrompt(options: {
       prompt += ', smooth cinematic motion';
   }
 
-  // 4. Hard-cut protection (prevents woman→man morph when start/end frames differ)
+  // 5. Hard-cut protection (prevents woman→man morph when start/end frames differ)
   if (options.isHardCut) {
     prompt += `. ${HARD_CUT_INSTRUCTION}`;
   }
 
-  // 5. Video-specific ending
+  // 6. Video-specific ending
   prompt +=
     ', smooth rendering, high-fidelity character details, no sudden jumps, no morphing, clean video, no text, no subtitles, no watermark';
 

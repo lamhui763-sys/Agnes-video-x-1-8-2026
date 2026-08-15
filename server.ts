@@ -2543,7 +2543,10 @@ app.post("/api/generate", express.json({ limit: "50mb" }), async (req, res) => {
       useMidpointSplit = false,
       sceneIndex,
       sceneType,
-      prevScene
+      prevScene,
+      characterImages,
+      continuityMode = "standard",
+      requireCharacterConsistency = false
     } = req.body;
     const force = req.query.force === 'true';
 
@@ -2594,6 +2597,10 @@ app.post("/api/generate", express.json({ limit: "50mb" }), async (req, res) => {
       let finalPrompt = prompt;
       let hasSynthesized = false;
       const logs: string[] = [];
+      const isContinuousStory = continuityMode === "continuous-story" || sceneType === "chain";
+      const continuousStoryDirective = isContinuousStory
+        ? `[CONTINUOUS STORY MODE — MANDATORY]: This is one uninterrupted beat in an ongoing scene, never a montage, trailer, music video, or list of events. Begin at the exact physical and emotional state of the supplied start frame. Show only one principal action and one believable reaction in real time. Preserve character identity, screen direction, eyeline, body position, lighting, location, and emotional tone. Use at most one gentle, motivated camera move. Never introduce a time jump, location jump, pose reset, fast cut, dramatic reveal, unrelated insert, or sequence of separate actions.`
+        : "";
 
   if (visualPrompt || actionPrompt || transitionPrompt || directorNotes) {
     try {
@@ -2650,6 +2657,7 @@ Instructions for synthesis:
 - Translate all Chinese dialogue, narration, and director's notes into precise English cinematic guidelines.
 - Integrate the camera angles, movements (e.g. pan, tilt, zoom, dolly), lighting (e.g. warm, neon, moody), and actor's acting cues from the director's notes into standard English movie terminology.
 - Make the transition smooth and logical if transitionPrompt is specified.
+${continuousStoryDirective}
 ${antiMorphingSection}
 - [CRITICAL CHARACTER ANCHORING & ANTI-ARCHETYPE HIJACKING]: To prevent feature drift, gender changes, or "Archetype Hijacking" (such as a female character turning into a male character, or randomly gaining an umbrella/trenchcoat in a rainy alleyway):
   1. DO NOT rely on simple pronouns like "she" or "he". Always explicitly refer to the character by name ("${character || "the character"}") and repeat their core description features.
@@ -2712,9 +2720,15 @@ ${antiMorphingSection}
     }
   }
 
-  if (endImageUrl && !useFreezeAndMove) {
-    finalPrompt += " [FLUID CONTINUOUS MOTION] The character and camera must transform and move fluidly and continuously from the very first frame to the very last frame without any freezing or pausing.";
-  }
+      if (continuousStoryDirective && !finalPrompt.includes("[CONTINUOUS STORY MODE")) {
+        // Prompt synthesis can condense instructions, so enforce the story-beat constraint
+        // in the final API prompt as well.
+        finalPrompt = `${continuousStoryDirective} ${finalPrompt}`;
+      }
+
+      if (endImageUrl && !useFreezeAndMove) {
+        finalPrompt += " [FLUID CONTINUOUS MOTION] The character and camera must transform and move fluidly and continuously from the very first frame to the very last frame without any freezing or pausing.";
+      }
 
   activeTask.progress = "5%";
   activeTask.prompt = finalPrompt;
@@ -2730,6 +2744,20 @@ ${antiMorphingSection}
 
     let finalImageUrl = imageUrl;
     let finalEndImageUrl = endImageUrl;
+    const referenceImageUrls = Array.isArray(characterImages)
+      ? characterImages.filter((url: unknown): url is string => typeof url === "string" && url.trim().length > 0)
+      : (typeof characterImages === "string" && characterImages.trim() ? [characterImages] : []);
+
+    // A previous clip's tail frame takes priority for spatial continuity. For the
+    // first clip (or a hard-cut character change), use the character avatar as the
+    // visual anchor instead of generating from text alone.
+    if (!finalImageUrl && referenceImageUrls.length > 0) {
+      finalImageUrl = referenceImageUrls[0];
+      activeTask.logs.push(`[SYSTEM] Using character reference as the first-frame identity anchor (${referenceImageUrls.length} reference image(s) available).`);
+    }
+    if (requireCharacterConsistency && referenceImageUrls.length === 0) {
+      activeTask.logs.push(`[SYSTEM] Character consistency requested without a reference image; relying on the character bible and start frame.`);
+    }
 
     // Safety check: Drop end frame if hard cut or different characters are flagged
     if (req.body.isHardCut || req.body.step5Mode === 'transition') {
