@@ -2546,7 +2546,8 @@ app.post("/api/generate", express.json({ limit: "50mb" }), async (req, res) => {
       prevScene,
       characterImages,
       continuityMode = "standard",
-      requireCharacterConsistency = false
+      requireCharacterConsistency = false,
+      imageInputPlacement = "auto"
     } = req.body;
     const force = req.query.force === 'true';
 
@@ -2938,9 +2939,14 @@ ${antiMorphingSection}
       }
     }
 
+    const forceExtraBodyImage = imageInputPlacement === "extra_body";
     if (finalImageUrl && finalImageUrl.startsWith("http")) {
       activeTask.logs.push(`[SYSTEM] Passing storyboard image URL to Agnes Video Generator: ${finalImageUrl}`);
       args.push("--image", finalImageUrl);
+      if (forceExtraBodyImage) {
+        args.push("--multi-image");
+        activeTask.logs.push("[SYSTEM] Using extra_body.image payload for the single start frame.");
+      }
     }
 
     if (useMidpointSplit && finalImageUrl && finalEndImageUrl) {
@@ -2994,7 +3000,7 @@ ${antiMorphingSection}
 
     if (nodeImages.length > 0) {
       const isKeyframes = !!(finalEndImageUrl && finalEndImageUrl.startsWith("http"));
-      const useExtraBody = isKeyframes || nodeImages.length > 1;
+      const useExtraBody = isKeyframes || nodeImages.length > 1 || forceExtraBodyImage;
       if (useExtraBody) {
         nodePayload.extra_body = { image: nodeImages };
         if (isKeyframes) {

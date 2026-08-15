@@ -217,6 +217,8 @@ async function generateVideo(shot, startFrameUrl, previousShot) {
     characterImages: [startFrameUrl],
     artStyle: "photorealistic cinematic drama, natural real human actor, soft rainy morning light, 35mm lens, restrained camera movement",
     imageUrl: startFrameUrl,
+    // Agnes accepts some externally hosted single frames only through extra_body.image.
+    imageInputPlacement: "extra_body",
     durationSeconds: shot.durationSeconds,
     agnesVideoMode: "quality",
     sceneType: "chain",
