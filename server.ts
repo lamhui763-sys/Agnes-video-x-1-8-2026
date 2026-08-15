@@ -2943,6 +2943,8 @@ ${antiMorphingSection}
     if (finalImageUrl && finalImageUrl.startsWith("http")) {
       activeTask.logs.push(`[SYSTEM] Passing storyboard image URL to Agnes Video Generator: ${finalImageUrl}`);
       args.push("--image", finalImageUrl);
+      args.push("--mode", "ti2vid");
+      activeTask.logs.push("[SYSTEM] Enabling Agnes image-to-video mode (ti2vid) for the start frame.");
       if (forceExtraBodyImage) {
         args.push("--multi-image");
         activeTask.logs.push("[SYSTEM] Using extra_body.image payload for the single start frame.");
@@ -2999,6 +3001,7 @@ ${antiMorphingSection}
     }
 
     if (nodeImages.length > 0) {
+      nodePayload.mode = "ti2vid";
       const isKeyframes = !!(finalEndImageUrl && finalEndImageUrl.startsWith("http"));
       const useExtraBody = isKeyframes || nodeImages.length > 1 || forceExtraBodyImage;
       if (useExtraBody) {
